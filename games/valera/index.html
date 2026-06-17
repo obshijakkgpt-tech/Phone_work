@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Валера — Слаботочник</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  background: #111;
+  display: flex; align-items: center; justify-content: center;
+  min-height: 100vh; overflow: hidden;
+  touch-action: none; user-select: none;
+}
+canvas { display: block; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<canvas id="g"></canvas>
+<script>
+(function () {
+"use strict";
+
+// ─── CANVAS SETUP ───────────────────────────────────────────
+const cv = document.getElementById("g");
+const cx = cv.getContext("2d");
+const W = 480, H = 300;
+cv.width = W; cv.height = H;
+
+function resize() {
+  const s = Math.min(window.innerWidth / W, window.innerHeight / H);
+  cv.style.width  = (W * s) + "px";
+  cv.style.height = (H * s) + "px";
+}
+window.addEventListener("resize", resize);
+resize();
+
+function canvasXY(clientX, clientY) {
+  const r = cv.getBoundingClientRect();
+  return { x: (clientX - r.left) * (W / r.width), y: (clientY - r.top) * (H / r.height) };
+}
+
+// ─── CONSTANTS ──────────────────────────────────────────────
+const GR    = 0.46;   // gravity
+const JUMP  = -9.8;   // jump impulse
+const SPD   = 3.4;    // walk speed
+const PW    = 20;     // player width
+const PH    = 42;     // player height
+const WORLD = 5200;   // world width
+
+// ─── LEVEL DATA ─────────────────────────────────────────────
+// Platform: { x, y, w, h, c:"color" }
+const PLATS = [
+  // ZONE 1 – стартовая комната
+  { x:0,    y:258, w:700,  h:42, c:"#455a64" },
+  { x:160,  y:210, w:110,  h:16, c:"#607d8b" }, // raised block
+
+  // ZONE 2 – прыжковая секция
+  { x:830,  y:258, w:230,  h:42, c:"#455a64" },
+  { x:870,  y:208, w:90,   h:16, c:"#607d8b" },
+
+  { x:1110, y:258, w:380,  h:42, c:"#455a64" },
+  { x:1150, y:228, w:70,   h:16, c:"#607d8b" },
+  { x:1240, y:190, w:70,   h:16, c:"#607d8b" },
+  { x:1330, y:152, w:80,   h:16, c:"#607d8b" },
+  { x:1420, y:190, w:70,   h:16, c:"#607d8b" },
+
+  // ZONE 3 – офис (столы)
+  { x:1590, y:258, w:960,  h:42, c:"#455a64" },
+  { x:1640, y:208, w:140,  h:16, c:"#6d4c41" }, // стол 1
+  { x:1870, y:208, w:140,  h:16, c:"#6d4c41" }, // стол 2
+  { x:2100, y:208, w:140,  h:16, c:"#6d4c41" }, // стол 3
+  { x:2360, y:208, w:80,   h:16, c:"#607d8b" },
+
+  // ZONE 4 – прыжки через пропасти
+  { x:2660, y:258, w:150,  h:42, c:"#455a64" },
+  { x:2690, y:198, w:80,   h:16, c:"#607d8b" },
+
+  { x:2880, y:258, w:150,  h:42, c:"#455a64" },
+  { x:2910, y:198, w:80,   h:16, c:"#607d8b" },
+
+  { x:3100, y:258, w:150,  h:42, c:"#455a64" },
+  { x:3130, y:158, w:80,   h:16, c:"#607d8b" },
+
+  { x:3320, y:258, w:150,  h:42, c:"#455a64" },
+  { x:3350, y:198, w:80,   h:16, c:"#607d8b" },
+
+  // ZONE 5 – финальный подъём
+  { x:3570, y:258, w:1200, h:42, c:"#37474f" },
+  { x:3610, y:200, w:80,   h:16, c:"#546e7a" },
+  { x:3760, y:162, w:80,   h:16, c:"#546e7a" },
+  { x:3910, y:124, w:100,  h:16, c:"#546e7a" }, // самая высокая
+  { x:4070, y:162, w:80,   h:16, c:"#546e7a" },
+  { x:4220, y:200, w:80,   h:16, c:"#546e7a" },
+
+  // GOAL – серверная
+  { x:4460, y:258, w:800,  h:42, c:"#1b5e20" },
+  { x:4510, y:180, w:80,   h:16, c:"#2e7d32" },
+];
+
+// Сборы (стяжки)
+const TIES = [
+  { x:220,  y:196, done:false },
+  { x:920,  y:194, done:false },
+  { x:1370, y:138, done:false },
+  { x:1710, y:194, done:false },
+  { x:1940, y:194, done:false },
+  { x:2170, y:194, done:false },
+  { x:2740, y:184, done:false },
+  { x:3950, y:110, done:false },
+];
+
+// Враги – катящиеся кресла
+const CHAIRS = [
+  { x:300,  y:247, vx: 1.2, min:20,   max:680,  w:32, h:28 },
+  { x:1750, y:247, vx:-1.2, min:1600, max:2540, w:32, h:28 },
+  { x:3620, y:247, vx: 1.0, min:3575, max:4440, w:32, h:28 },
+];
+
+// Контрольные точки
+const CPS = [
+  { x:1590, y:212, w:16, h:46, done:false },
+  { x:2660, y:212, w:16, h:46, done:false },
+  { x:3570, y:212, w:16, h:46, done:false },
+];
+
+// Финальная патч-панель
+const GOAL = { x:4620, y:170, w:55, h:88 };
+
+// ─── STATE ──────────────────────────────────────────────────
+let player, cam, lives, score, fr, trail, gstate;
+// gstate: 'menu' | 'play' | 'dead' | 'win'
+
+function initGame() {
+  player = {
+    x: 80, y: 210,
+    vx: 0, vy: 0,
+    onGround: false,
+    facing: 1,
+    wf: 0,          // walk frame counter
+    cpX: 80, cpY: 210, // last checkpoint
+  };
+  cam   = { x: 0 };
+  lives = 3;
+  score = 0;
+  fr    = 0;
+  trail = [];
+  TIES.forEach(t => t.done = false);
+  CPS.forEach(c  => c.done = false);
+  CHAIRS.forEach((ch, i) => ch.x = [300, 1750, 3620][i]);
+  gstate = "play";
+}
+
+// ─── INPUT ──────────────────────────────────────────────────
+const keys = {};
+document.addEventListener("keydown", e => {
+  keys[e.key] = true;
+  if (gstate === "play" && (e.key === " " || e.key === "ArrowUp" || e.key === "w") && player.onGround) {
+    player.vy = JUMP; player.onGround = false;
+  }
+});
+document.addEventListener("keyup", e => { keys[e.key] = false; });
+
+// Touch buttons (drawn on canvas)
+const TB = {
+  L:    { x:10,  y:H-80, w:70, h:70 },
+  R:    { x:85,  y:H-80, w:70, h:70 },
+  JUMP: { x:W-88, y:H-80, w:78, h:70 },
+};
+const tp = { L:false, R:false, J:false };
+let prevJ = false;
+
+function readTouches(e) {
+  tp.L = tp.R = tp.J = false;
+  for (let i = 0; i < e.touches.length; i++) {
+    const { x, y } = canvasXY(e.touches[i].clientX, e.touches[i].clientY);
+    if (inBox(x, y, TB.L))    tp.L = true;
+    if (inBox(x, y, TB.R))    tp.R = true;
+    if (inBox(x, y, TB.JUMP)) tp.J = true;
+  }
+}
+function inBox(x, y, b) { return x>=b.x && x<=b.x+b.w && y>=b.y && y<=b.y+b.h; }
+
+cv.addEventListener("touchstart",  readTouches, { passive:false });
+cv.addEventListener("touchmove",   readTouches, { passive:false });
+cv.addEventListener("touchend",    readTouches, { passive:false });
+cv.addEventListener("touchcancel", readTouches, { passive:false });
+document.addEventListener("touchstart", e => e.preventDefault(), { passive:false });
+
+// ─── PHYSICS ────────────────────────────────────────────────
+function rectHit(ax,ay,aw,ah,bx,by,bw,bh) {
+  return ax < bx+bw && ax+aw > bx && ay < by+bh && ay+ah > by;
+}
+
+function update() {
+  if (gstate !== "play") return;
+  fr++;
+
+  // Jump via touch (edge trigger)
+  if (tp.J && !prevJ && player.onGround) { player.vy = JUMP; player.onGround = false; }
+  prevJ = tp.J;
+
+  const goL = keys["ArrowLeft"]  || keys["a"] || keys["A"] || tp.L;
+  const goR = keys["ArrowRight"] || keys["d"] || keys["D"] || tp.R;
+
+  if (goL)      { player.vx = -SPD; player.facing = -1; }
+  else if (goR) { player.vx =  SPD; player.facing =  1; }
+  else          { player.vx *= 0.65; }
+
+  if (Math.abs(player.vx) > 0.6) player.wf += 0.18;
+
+  // ── X move + collide ──
+  player.x += player.vx;
+  if (player.x < 0) player.x = 0;
+  if (player.x + PW > WORLD) player.x = WORLD - PW;
+  for (const p of PLATS) {
+    if (rectHit(player.x, player.y, PW, PH, p.x, p.y, p.w, p.h)) {
+      if (player.vx > 0) { player.x = p.x - PW; player.vx = 0; }
+      else if (player.vx < 0) { player.x = p.x + p.w; player.vx = 0; }
+    }
+  }
+
+  // ── Y move + collide ──
+  player.vy = Math.min(player.vy + GR, 13);
+  player.y += player.vy;
+  player.onGround = false;
+  for (const p of PLATS) {
+    if (rectHit(player.x, player.y, PW, PH, p.x, p.y, p.w, p.h)) {
+      if (player.vy >= 0) {
+        player.y = p.y - PH;
+        player.vy = 0;
+        player.onGround = true;
+      } else {
+        player.y = p.y + p.h;
+        player.vy = 0;
+      }
+    }
+  }
+
+  // Fall into pit
+  if (player.y > H + 60) { die(); return; }
+
+  // ── Enemies ──
+  for (const ch of CHAIRS) {
+    ch.x += ch.vx;
+    if (ch.x < ch.min || ch.x + ch.w > ch.max) ch.vx *= -1;
+    if (rectHit(player.x, player.y, PW, PH, ch.x, ch.y - ch.h, ch.w, ch.h)) {
+      if (player.vy > 0 && player.y + PH < ch.y - ch.h + 12) {
+        player.vy = JUMP * 0.55;   // топнул по креслу → отпрыгнул
+        ch.vx *= -1;
+        score += 50;
+      } else { die(); return; }
+    }
+  }
+
+  // ── Collectibles ──
+  for (const t of TIES) {
+    if (!t.done && Math.abs(player.x + PW/2 - t.x) < 14 && Math.abs(player.y + PH/2 - t.y) < 14) {
+      t.done = true; score += 100;
+    }
+  }
+
+  // ── Checkpoints ──
+  for (const cp of CPS) {
+    if (!cp.done && rectHit(player.x, player.y, PW, PH, cp.x, cp.y, cp.w, cp.h)) {
+      cp.done = true;
+      player.cpX = cp.x;
+      player.cpY = cp.y - PH;
+    }
+  }
+
+  // ── Goal ──
+  if (rectHit(player.x, player.y, PW, PH, GOAL.x, GOAL.y, GOAL.w, GOAL.h)) {
+    gstate = "win"; score += 1000;
+  }
+
+  // ── Camera ──
+  cam.x += (player.x - 150 - cam.x) * 0.1;
+  cam.x = Math.max(0, Math.min(cam.x, WORLD - W));
+
+  // ── Cable trail ──
+  if (fr % 2 === 0) {
+    trail.push({ x: player.x + PW/2, y: player.y + PH - 6 });
+    if (trail.length > 500) trail.shift();
+  }
+}
+
+function die() {
+  lives--;
+  if (lives <= 0) { gstate = "dead"; return; }
+  player.x  = player.cpX;
+  player.y  = player.cpY;
+  player.vx = player.vy = 0;
+  trail = [];
+}
+
+// ─── SCREEN X ───────────────────────────────────────────────
+function sx(wx) { return Math.round(wx - cam.x); }
+
+// ─── DRAWING ────────────────────────────────────────────────
+function rr(x, y, w, h, r) {       // roundRect helper (IE/old Safari safe)
+  const min = Math.min(r, w/2, h/2);
+  cx.beginPath();
+  cx.moveTo(x + min, y);
+  cx.lineTo(x + w - min, y);
+  cx.arcTo(x+w, y,   x+w, y+h, min);
+  cx.lineTo(x+w, y+h-min);
+  cx.arcTo(x+w, y+h, x,   y+h, min);
+  cx.lineTo(x+min, y+h);
+  cx.arcTo(x,   y+h, x,   y,   min);
+  cx.lineTo(x, y+min);
+  cx.arcTo(x,   y,   x+w, y,   min);
+  cx.closePath();
+}
+
+function drawBG() {
+  // Ceiling / wall
+  cx.fillStyle = "#d7ccc8";
+  cx.fillRect(0, 0, W, H);
+
+  // Wall stripes (parallax)
+  const off = (cam.x * 0.25) % 80;
+  cx.fillStyle = "#cfd8dc";
+  for (let i = -1; i < W/80 + 1; i++) {
+    cx.fillRect(i * 80 - off, 0, 38, H);
+  }
+
+  // Ceiling tiles
+  cx.fillStyle = "#bdbdbd";
+  const coff = (cam.x * 0.1) % 40;
+  for (let i = -1; i < W/40 + 1; i++) {
+    cx.fillRect(i * 40 - coff, 2, 36, 12);
+  }
+
+  // Floor shadow line
+  cx.fillStyle = "rgba(0,0,0,0.12)";
+  cx.fillRect(0, 256, W, 6);
+
+  // Background cables on wall
+  cx.strokeStyle = "rgba(180,140,60,0.25)";
+  cx.lineWidth = 3;
+  cx.setLineDash([12, 8]);
+  const cw = (cam.x * 0.15) % W;
+  for (let i = -1; i < 4; i++) {
+    cx.beginPath();
+    cx.moveTo(i * 160 - cw, 50);
+    cx.lineTo(i * 160 - cw + 60, 50);
+    cx.lineTo(i * 160 - cw + 60, H);
+    cx.stroke();
+  }
+  cx.setLineDash([]);
+}
+
+function drawPlatforms() {
+  for (const p of PLATS) {
+    const px = sx(p.x);
+    if (px + p.w < 0 || px > W) continue;
+    cx.fillStyle = p.c;
+    cx.fillRect(px, p.y, p.w, p.h);
+    // edge highlight
+    cx.fillStyle = "rgba(255,255,255,0.18)";
+    cx.fillRect(px, p.y, p.w, 3);
+    // bottom shadow
+    cx.fillStyle = "rgba(0,0,0,0.2)";
+    cx.fillRect(px, p.y + p.h - 4, p.w, 4);
+  }
+}
+
+function drawGoal() {
+  const gx = sx(GOAL.x);
+  if (gx > W || gx + GOAL.w < 0) return;
+
+  // Wall mount / patch panel
+  cx.fillStyle = "#0d47a1";
+  cx.fillRect(gx, GOAL.y, GOAL.w, GOAL.h);
+  cx.strokeStyle = "#1565c0";
+  cx.lineWidth = 2;
+  cx.strokeRect(gx, GOAL.y, GOAL.w, GOAL.h);
+
+  // Port grid
+  for (let row = 0; row < 4; row++) {
+    for (let col = 0; col < 3; col++) {
+      cx.fillStyle = row === 0 && col === 0 ? "#ffeb3b" : "#e0e0e0";
+      cx.fillRect(gx + 5 + col * 16, GOAL.y + 7 + row * 19, 12, 10);
+    }
+  }
+
+  // Blinking LED on first port
+  if (Math.floor(fr / 18) % 2 === 0) {
+    cx.fillStyle = "#69f0ae";
+    cx.beginPath();
+    cx.arc(gx + 57, GOAL.y + 6, 4, 0, Math.PI*2);
+    cx.fill();
+  }
+
+  // Label
+  cx.fillStyle = "#ffeb3b";
+  cx.font = "bold 9px monospace";
+  cx.textAlign = "center";
+  cx.fillText("ПАТЧ-ПАНЕЛЬ", gx + GOAL.w/2, GOAL.y + GOAL.h + 14);
+  cx.fillText("← ПОДКЛЮЧИ", gx + GOAL.w/2, GOAL.y + GOAL.h + 25);
+}
+
+function drawCable() {
+  if (trail.length < 3) return;
+  cx.save();
+  cx.lineCap = "round";
+  cx.lineJoin = "round";
+
+  // Shadow
+  cx.strokeStyle = "rgba(0,0,0,0.2)";
+  cx.lineWidth = 5;
+  cx.beginPath();
+  cx.moveTo(sx(trail[0].x), trail[0].y + 2);
+  for (let i = 1; i < trail.length; i++) cx.lineTo(sx(trail[i].x), trail[i].y + 2);
+  cx.stroke();
+
+  // Main cable — yellow UTP
+  cx.strokeStyle = "#fdd835";
+  cx.lineWidth = 4;
+  cx.beginPath();
+  cx.moveTo(sx(trail[0].x), trail[0].y);
+  for (let i = 1; i < trail.length; i++) cx.lineTo(sx(trail[i].x), trail[i].y);
+  cx.stroke();
+
+  // White stripe
+  cx.strokeStyle = "rgba(255,255,255,0.45)";
+  cx.lineWidth = 1.2;
+  cx.setLineDash([5, 7]);
+  cx.beginPath();
+  cx.moveTo(sx(trail[0].x), trail[0].y - 1);
+  for (let i = 1; i < trail.length; i++) cx.lineTo(sx(trail[i].x), trail[i].y - 1);
+  cx.stroke();
+  cx.setLineDash([]);
+  cx.restore();
+}
+
+function drawTies() {
+  for (const t of TIES) {
+    if (t.done) continue;
+    const tx = sx(t.x);
+    if (tx < -20 || tx > W + 20) continue;
+    const bob = Math.sin(fr * 0.08) * 2.5;
+    cx.save();
+    cx.translate(tx, t.y + bob);
+
+    // Glow
+    cx.fillStyle = "rgba(41,182,246,0.22)";
+    cx.beginPath(); cx.arc(0, 0, 15, 0, Math.PI*2); cx.fill();
+
+    // Cable tie shape
+    cx.fillStyle = "#0288d1";
+    rr(-9, -5, 18, 10, 5); cx.fill();
+    cx.fillStyle = "#01579b";
+    cx.fillRect(5, -7, 5, 14);
+
+    cx.fillStyle = "#e3f2fd";
+    cx.font = "bold 7px sans-serif";
+    cx.textAlign = "center";
+    cx.fillText("+100", 0, -10 - bob);
+
+    cx.restore();
+  }
+}
+
+function drawChairs() {
+  for (const ch of CHAIRS) {
+    const chx = sx(ch.x);
+    if (chx + ch.w < 0 || chx > W) continue;
+    cx.save();
+    cx.translate(chx + ch.w/2, ch.y);
+    if (ch.vx > 0) cx.scale(-1, 1);
+
+    // Wheels
+    cx.fillStyle = "#212121";
+    for (const wx of [-12, 0, 12]) {
+      cx.beginPath(); cx.arc(wx, 2, 4, 0, Math.PI*2); cx.fill();
+    }
+    // Star base
+    cx.strokeStyle = "#616161";
+    cx.lineWidth = 3; cx.lineCap = "round";
+    const rot = fr * 0.06 * Math.sign(ch.vx);
+    for (let i = 0; i < 5; i++) {
+      const a = (i/5)*Math.PI*2 + rot;
+      cx.beginPath();
+      cx.moveTo(0, -4);
+      cx.lineTo(Math.cos(a)*13, -4 + Math.sin(a)*6);
+      cx.stroke();
+    }
+    // Seat
+    cx.fillStyle = "#1a237e";
+    cx.fillRect(-14, -22, 28, 8);
+    // Backrest
+    cx.fillStyle = "#283593";
+    cx.fillRect(-3, -30, 12, 18);
+    // Angry eyes
+    cx.fillStyle = "#ef5350";
+    cx.fillRect(-6, -27, 5, 3);
+    cx.fillRect(2,  -27, 5, 3);
+
+    cx.restore();
+  }
+}
+
+function drawCheckpoints() {
+  for (const cp of CPS) {
+    const cpx = sx(cp.x);
+    if (cpx + cp.w < 0 || cpx > W) continue;
+    // Flag pole
+    cx.fillStyle = cp.done ? "#43a047" : "#f9a825";
+    cx.fillRect(cpx, cp.y, cp.w, cp.h);
+    // Flag
+    cx.fillStyle = cp.done ? "#1b5e20" : "#e65100";
+    cx.beginPath();
+    cx.moveTo(cpx + cp.w, cp.y);
+    cx.lineTo(cpx + cp.w + 18, cp.y + 12);
+    cx.lineTo(cpx + cp.w, cp.y + 24);
+    cx.fill();
+  }
+}
+
+// ─── VALERA CHARACTER ───────────────────────────────────────
+function drawValera() {
+  const vx = sx(player.x) + PW/2;
+  const vy = player.y;
+  const f  = player.facing;
+  const wf = player.onGround ? player.wf : 0;
+  const ls = Math.sin(wf) * 9;    // leg swing degrees
+  const as = Math.sin(wf) * 7;    // arm swing
+
+  cx.save();
+  cx.translate(vx, vy);
+  if (f < 0) cx.scale(-1, 1);
+
+  // Shadow on ground
+  if (player.onGround) {
+    cx.fillStyle = "rgba(0,0,0,0.13)";
+    cx.beginPath();
+    cx.ellipse(0, PH + 2, 14, 5, 0, 0, Math.PI*2);
+    cx.fill();
+  }
+
+  // ── Cable reel (on back) ──
+  cx.fillStyle = "#546e7a";
+  cx.beginPath(); cx.arc(-13, 23, 10, 0, Math.PI*2); cx.fill();
+  cx.strokeStyle = "#fdd835"; cx.lineWidth = 2;
+  cx.beginPath(); cx.arc(-13, 23, 7, 0, Math.PI*2); cx.stroke();
+  cx.fillStyle = "#37474f";
+  cx.beginPath(); cx.arc(-13, 23, 2.5, 0, Math.PI*2); cx.fill();
+  // Cable coming off reel
+  cx.strokeStyle = "#fdd835"; cx.lineWidth = 3; cx.lineCap = "round";
+  cx.beginPath();
+  cx.moveTo(-13, 33);
+  cx.lineTo(-10, 40);
+  cx.stroke();
+
+  // ── Legs ──
+  cx.lineCap = "butt";
+  for (const [ox, sign] of [[-5, 1], [5, -1]]) {
+    cx.save();
+    cx.translate(ox, 30);
+    cx.rotate(ls * sign * Math.PI/180);
+    cx.fillStyle = "#1a237e";
+    cx.fillRect(-4, 0, 7, 13);
+    cx.fillStyle = "#111";
+    cx.fillRect(-5, 11, 9, 6);
+    cx.restore();
+  }
+
+  // ── Body — overalls ──
+  cx.fillStyle = "#1565c0";
+  cx.fillRect(-9, 14, 18, 18);
+
+  // Hi-vis vest (orange)
+  cx.fillStyle = "#e65100";
+  cx.fillRect(-9, 14, 18, 4);
+  cx.fillRect(-9, 26, 18, 4);
+  cx.fillRect(-9, 14, 4, 18);
+  cx.fillRect(5,  14, 4, 18);
+
+  // ── Arms ──
+  cx.lineCap = "round";
+  for (const [ox, sign] of [[9, 1], [-9, -1]]) {
+    cx.save();
+    cx.translate(ox, 18);
+    cx.rotate((as * sign + 15 * sign) * Math.PI/180);
+    cx.strokeStyle = "#1565c0"; cx.lineWidth = 5;
+    cx.beginPath(); cx.moveTo(0, 0); cx.lineTo(0, 13); cx.stroke();
+    cx.fillStyle = "#f5cba7";
+    cx.beginPath(); cx.arc(0, 13, 3, 0, Math.PI*2); cx.fill();
+    cx.restore();
+  }
+
+  // ── Head ──
+  cx.fillStyle = "#f5cba7";
+  cx.beginPath(); cx.arc(0, 8, 9, 0, Math.PI*2); cx.fill();
+
+  // Face
+  cx.fillStyle = "#2c1a0e";
+  // Eyes
+  cx.beginPath();
+  cx.arc( 3, 7, 1.6, 0, Math.PI*2);
+  cx.arc(-3, 7, 1.6, 0, Math.PI*2);
+  cx.fill();
+  // Expression
+  cx.lineWidth = 1.5;
+  if (!player.onGround) {
+    // Jumping — O mouth
+    cx.beginPath(); cx.arc(0, 11, 2.2, 0, Math.PI*2); cx.fill();
+  } else if (Math.abs(player.vx) > 0.8) {
+    // Running — tight mouth
+    cx.strokeStyle = "#2c1a0e";
+    cx.beginPath(); cx.moveTo(-2.5, 11); cx.lineTo(2.5, 11); cx.stroke();
+  } else {
+    // Idle — smile
+    cx.strokeStyle = "#2c1a0e";
+    cx.beginPath(); cx.arc(0, 10, 2.5, 0.1, Math.PI - 0.1); cx.stroke();
+  }
+
+  // ── Hard hat ──
+  cx.fillStyle = "#f9a825";
+  cx.beginPath(); cx.arc(0, 3, 11, Math.PI, 0); cx.fill();
+  cx.fillRect(-13, 2, 26, 5);
+  cx.fillStyle = "#f57f17";
+  cx.fillRect(-10, 0, 20, 3);
+
+  cx.restore();
+}
+
+function drawHUD() {
+  // Top bar background
+  cx.fillStyle = "rgba(0,0,0,0.55)";
+  cx.fillRect(0, 0, W, 26);
+
+  // Score
+  cx.fillStyle = "#ffeb3b";
+  cx.font = "bold 13px monospace";
+  cx.textAlign = "left";
+  cx.fillText("💰 " + score, 8, 17);
+
+  // Lives
+  cx.textAlign = "right";
+  cx.fillText("❤️".repeat(lives), W - 8, 17);
+
+  // Progress bar
+  const pct = Math.min(1, (player.x - 80) / (GOAL.x + 20 - 80));
+  cx.fillStyle = "rgba(255,255,255,0.15)";
+  cx.fillRect(W/2 - 72, 7, 144, 11);
+  cx.fillStyle = pct > 0.85 ? "#69f0ae" : "#ffb300";
+  cx.fillRect(W/2 - 72, 7, 144 * pct, 11);
+  cx.strokeStyle = "rgba(255,255,255,0.4)";
+  cx.lineWidth = 1;
+  cx.strokeRect(W/2 - 72, 7, 144, 11);
+  cx.fillStyle = "#fff";
+  cx.font = "7px monospace";
+  cx.textAlign = "center";
+  cx.fillText("🔌 " + Math.round(pct * 100) + "%", W/2, 16);
+
+  // ── Touch buttons ──
+  drawBtn(TB.L,    "◀",    tp.L);
+  drawBtn(TB.R,    "▶",    tp.R);
+  drawBtn(TB.JUMP, "ПРЫГ", tp.J);
+}
+
+function drawBtn(b, label, active) {
+  cx.save();
+  cx.globalAlpha = 0.82;
+  cx.fillStyle   = active ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.45)";
+  cx.strokeStyle = active ? "#fff" : "rgba(255,255,255,0.4)";
+  cx.lineWidth   = 2;
+  rr(b.x, b.y, b.w, b.h, 14);
+  cx.fill(); cx.stroke();
+  cx.fillStyle   = active ? "#fff" : "rgba(255,255,255,0.85)";
+  cx.font        = "bold " + (label.length > 1 ? "13" : "22") + "px sans-serif";
+  cx.textAlign   = "center";
+  cx.textBaseline = "middle";
+  cx.fillText(label, b.x + b.w/2, b.y + b.h/2);
+  cx.textBaseline = "alphabetic";
+  cx.restore();
+}
+
+function drawOverlay(title, sub, btnText) {
+  cx.fillStyle = "rgba(0,0,0,0.72)";
+  cx.fillRect(0, 0, W, H);
+  cx.fillStyle = "#fff";
+  cx.font      = "bold 30px sans-serif";
+  cx.textAlign = "center";
+  cx.fillText(title, W/2, H/2 - 44);
+  cx.font      = "15px sans-serif";
+  cx.fillStyle = "#ddd";
+  cx.fillText(sub, W/2, H/2 - 10);
+
+  // Button
+  cx.fillStyle = gstate === "win" ? "#2e7d32" : "#c62828";
+  rr(W/2 - 88, H/2 + 14, 176, 46, 23);
+  cx.fill();
+  cx.fillStyle = "#fff";
+  cx.font      = "bold 18px sans-serif";
+  cx.textAlign = "center";
+  cx.fillText(btnText, W/2, H/2 + 43);
+}
+
+// ─── MENU ───────────────────────────────────────────────────
+function drawMenu() {
+  // Background
+  cx.fillStyle = "#1a237e";
+  cx.fillRect(0, 0, W, H);
+  for (let i = 0; i < 50; i++) {
+    cx.fillStyle = `rgba(255,255,255,${0.15 + Math.sin(fr*0.04+i)*0.1})`;
+    cx.fillRect((i*113)%W, (i*79)%H, 2, 2);
+  }
+  // Title
+  cx.fillStyle = "#fdd835";
+  cx.font      = "bold 26px monospace";
+  cx.textAlign = "center";
+  cx.fillText("ВАЛЕРА", W/2, 55);
+  cx.fillStyle = "#fff";
+  cx.font      = "bold 14px monospace";
+  cx.fillText("СЛАБОТОЧНИК", W/2, 76);
+  // Tagline
+  cx.fillStyle = "#b0bec5";
+  cx.font      = "12px sans-serif";
+  cx.fillText("Протяни UTP-кабель через весь офис", W/2, 104);
+  cx.fillText("и подключи его к патч-панели!", W/2, 120);
+
+  // Draw Valera preview
+  cx.save();
+  cx.translate(W/2, 185);
+  cx.scale(1.3, 1.3);
+  // static pose
+  // legs
+  cx.fillStyle = "#1a237e";
+  cx.fillRect(-5, 12, 6, 14); cx.fillRect(1, 12, 6, 14);
+  cx.fillStyle = "#111";
+  cx.fillRect(-6, 23, 8, 5);  cx.fillRect(1, 23, 8, 5);
+  // body
+  cx.fillStyle = "#1565c0"; cx.fillRect(-9, -2, 18, 16);
+  cx.fillStyle = "#e65100";
+  cx.fillRect(-9, -2, 18, 4); cx.fillRect(-9, 10, 18, 4);
+  cx.fillRect(-9, -2, 4, 16); cx.fillRect(5, -2, 4, 16);
+  // arms
+  cx.strokeStyle = "#1565c0"; cx.lineWidth = 5; cx.lineCap = "round";
+  cx.beginPath(); cx.moveTo(-9, 2); cx.lineTo(-14, 14); cx.stroke();
+  cx.beginPath(); cx.moveTo(9, 2);  cx.lineTo(14, 14);  cx.stroke();
+  // head
+  cx.fillStyle = "#f5cba7";
+  cx.beginPath(); cx.arc(0, -10, 9, 0, Math.PI*2); cx.fill();
+  // hat
+  cx.fillStyle = "#f9a825";
+  cx.beginPath(); cx.arc(0, -13, 11, Math.PI, 0); cx.fill();
+  cx.fillRect(-13, -14, 26, 5);
+  // eyes + smile
+  cx.fillStyle = "#2c1a0e";
+  cx.beginPath(); cx.arc(3, -11, 1.5, 0, Math.PI*2); cx.arc(-3, -11, 1.5, 0, Math.PI*2); cx.fill();
+  cx.strokeStyle = "#2c1a0e"; cx.lineWidth = 1.5;
+  cx.beginPath(); cx.arc(0, -7, 2.5, 0.1, Math.PI - 0.1); cx.stroke();
+  // cable
+  cx.fillStyle = "#546e7a"; cx.beginPath(); cx.arc(-13, 5, 9, 0, Math.PI*2); cx.fill();
+  cx.strokeStyle = "#fdd835"; cx.lineWidth = 2; cx.beginPath(); cx.arc(-13, 5, 6, 0, Math.PI*2); cx.stroke();
+  cx.restore();
+
+  // Play button
+  cx.fillStyle = "#43a047";
+  rr(W/2 - 96, 228, 192, 48, 24);
+  cx.fill();
+  cx.fillStyle = "#fff";
+  cx.font      = "bold 20px sans-serif";
+  cx.textAlign = "center";
+  cx.fillText("▶  ИГРАТЬ", W/2, 258);
+
+  cx.fillStyle = "rgba(255,255,255,0.3)";
+  cx.font      = "11px sans-serif";
+  cx.fillText("Стрелки/WASD + пробел  |  Кнопки на экране", W/2, 290);
+}
+
+// ─── GAME LOOP ──────────────────────────────────────────────
+let gstate_global = "menu";
+function setGstate(s) { gstate = s; gstate_global = s; }
+gstate = "menu";
+fr = 0;
+
+function loop() {
+  requestAnimationFrame(loop);
+  fr++;
+
+  if (gstate === "menu") {
+    drawMenu();
+    return;
+  }
+
+  update();
+
+  drawBG();
+  drawPlatforms();
+  drawCheckpoints();
+  drawGoal();
+  drawCable();
+  drawTies();
+  drawChairs();
+  drawValera();
+  drawHUD();
+
+  if (gstate === "dead") drawOverlay("💀 ПОДКЛЮЧЕНИЕ РАЗОРВАНО", "Кабель не дотянулся... Жизней: " + lives, "🔁 НАЧАТЬ ЗАНОВО");
+  if (gstate === "win")  drawOverlay("🎉 КАБЕЛЬ ПОДКЛЮЧЁН!", "Отлично, Валера! Счёт: " + score, "▶ ЕЩЁ РАЗ");
+}
+
+// ─── CLICK / TAP HANDLERS ───────────────────────────────────
+function handleClick(x, y) {
+  if (gstate === "menu") {
+    if (x > W/2 - 96 && x < W/2 + 96 && y > 228 && y < 276) {
+      initGame();
+    }
+    return;
+  }
+  if (gstate === "dead" || gstate === "win") {
+    if (x > W/2 - 88 && x < W/2 + 88 && y > H/2 + 14 && y < H/2 + 60) {
+      initGame();
+    }
+  }
+}
+
+cv.addEventListener("click", e => {
+  const { x, y } = canvasXY(e.clientX, e.clientY);
+  handleClick(x, y);
+});
+cv.addEventListener("touchend", e => {
+  e.preventDefault();
+  if (!e.changedTouches.length) return;
+  // only handle as click if it was a short tap (not swipe)
+  const { x, y } = canvasXY(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
+  handleClick(x, y);
+}, { passive: false });
+
+// ─── START ──────────────────────────────────────────────────
+initGame(); // pre-init player so menu can use player ref safely
+gstate = "menu";
+loop();
+})();
+</script>
+</body>
+</html>

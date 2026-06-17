@@ -3,409 +3,112 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Змейка</title>
+<title>Мини-игры</title>
 <style>
-  :root { --skin: #e8b48f; --burgundy: #7c1f2e; --burgundy-dark: #5a121e; }
-  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body {
-    margin: 0; height: 100%;
-    background: radial-gradient(circle at 50% 30%, #2b3a2b, #131a13);
-    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
-    color: #f0f0f0;
-    display: flex; flex-direction: column;
-    align-items: center; justify-content: center;
-    overflow: hidden; user-select: none;
-    touch-action: none;
-  }
-  h1 { margin: 8px 0 4px; font-size: 22px; letter-spacing: 2px; color: var(--skin); }
-  #scorebar { display: flex; gap: 24px; font-size: 16px; margin-bottom: 10px; }
-  #scorebar b { color: var(--skin); }
-  #wrap { position: relative; }
-  canvas {
-    background: #1a251a;
-    border: 4px solid var(--burgundy);
-    border-radius: 12px;
-    box-shadow: 0 8px 30px rgba(0,0,0,.5);
-    display: block;
-    max-width: 94vw; max-height: 62vh;
-  }
-  #overlay {
-    position: absolute; inset: 0; z-index: 20;
-    display: flex; flex-direction: column;
-    align-items: center; justify-content: center;
-    text-align: center;
-    background: rgba(10,15,10,.82);
-    border-radius: 12px; gap: 14px; padding: 20px;
-  }
-  #overlay.hidden { display: none; }
-  #overlay p { margin: 0; font-size: 15px; max-width: 260px; line-height: 1.5; }
-  button {
-    background: var(--burgundy); color: #fff; border: none;
-    padding: 14px 30px; font-size: 18px; border-radius: 30px; cursor: pointer;
-    position: relative; z-index: 30;
-  }
-  button:active { transform: scale(.95); }
-  #hint { font-size: 13px; color: #8a9; margin-top: 10px; }
-  /* Прозрачный слой на весь экран — ловит свайпы */
-  #swipe-layer {
-    position: fixed; inset: 0; z-index: 5;
-    touch-action: none;
-  }
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: #f0f0f0;
+  padding: 20px;
+}
+h1 {
+  text-align: center;
+  font-size: 28px;
+  letter-spacing: 3px;
+  padding: 20px 0 8px;
+  background: linear-gradient(90deg, #e94560, #f5a623, #e94560);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.subtitle {
+  text-align: center;
+  color: #8892b0;
+  font-size: 14px;
+  margin-bottom: 28px;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 16px;
+  max-width: 900px;
+  margin: 0 auto;
+}
+.card {
+  background: rgba(255,255,255,0.06);
+  border: 1.5px solid rgba(255,255,255,0.12);
+  border-radius: 16px;
+  padding: 20px 12px 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: transform .15s, border-color .15s, background .15s;
+  text-decoration: none;
+  color: inherit;
+  display: block;
+}
+.card:hover, .card:active {
+  transform: translateY(-3px);
+  border-color: rgba(233,69,96,0.6);
+  background: rgba(233,69,96,0.08);
+}
+.card.soon {
+  opacity: 0.38;
+  cursor: default;
+  pointer-events: none;
+}
+.card .icon { font-size: 42px; margin-bottom: 10px; display: block; }
+.card .num  { font-size: 10px; color: #8892b0; margin-bottom: 4px; }
+.card .name { font-size: 14px; font-weight: 600; line-height: 1.3; }
+.card .tag  {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  background: rgba(99,255,132,0.15);
+  color: #63ff84;
+}
+.card.soon .tag {
+  background: rgba(255,255,255,0.08);
+  color: #8892b0;
+}
+footer {
+  text-align: center;
+  margin-top: 32px;
+  color: #4a5568;
+  font-size: 12px;
+  padding-bottom: 20px;
+}
 </style>
 </head>
 <body>
-  <!-- swipe-layer ниже overlay (z:5 < z:20), но выше canvas -->
-  <div id="swipe-layer"></div>
-  <h1>🐍 ЗМЕЙКА</h1>
-  <div id="scorebar">
-    <div>Счёт: <b id="score">0</b></div>
-    <div>Рекорд: <b id="best">0</b></div>
-  </div>
-  <div id="wrap">
-    <canvas id="game" width="400" height="400"></canvas>
-    <div id="overlay">
-      <p id="msg">Свайпай в любую сторону — змейка повернёт.<br>Собирай яблоки, не врежься!</p>
-      <button id="startBtn">Играть</button>
-    </div>
-  </div>
-  <div id="hint">← свайп в любую сторону →</div>
+<h1>🎮 МИНИ-ИГРЫ</h1>
+<p class="subtitle">Коллекция · 100 игр</p>
+<div class="grid">
 
-<script>
-(function () {
-  "use strict";
+  <a class="card" href="games/snake/index.html">
+    <span class="icon">🐍</span>
+    <div class="num">#001</div>
+    <div class="name">Змейка</div>
+    <span class="tag">✅ Готово</span>
+  </a>
 
-  const canvas    = document.getElementById("game");
-  const ctx       = canvas.getContext("2d");
-  const scoreEl   = document.getElementById("score");
-  const bestEl    = document.getElementById("best");
-  const overlay   = document.getElementById("overlay");
-  const msgEl     = document.getElementById("msg");
-  const startBtn  = document.getElementById("startBtn");
-  const swipeLayer = document.getElementById("swipe-layer");
+  <a class="card" href="games/valera/index.html">
+    <span class="icon">🔌</span>
+    <div class="num">#002</div>
+    <div class="name">Валера Слаботочник</div>
+    <span class="tag">✅ Готово</span>
+  </a>
 
-  const GRID = 20;
-  const CELL = canvas.width / GRID;
+  <!-- #003–100 coming soon -->
+  <div class="card soon"><span class="icon">❓</span><div class="num">#003</div><div class="name">Скоро</div><span class="tag">⏳ В разработке</span></div>
+  <div class="card soon"><span class="icon">❓</span><div class="num">#004</div><div class="name">Скоро</div><span class="tag">⏳ В разработке</span></div>
+  <div class="card soon"><span class="icon">❓</span><div class="num">#005</div><div class="name">Скоро</div><span class="tag">⏳ В разработке</span></div>
+  <div class="card soon"><span class="icon">❓</span><div class="num">#006</div><div class="name">Скоро</div><span class="tag">⏳ В разработке</span></div>
 
-  let snake, dir, nextDir, food, score, best, alive, speed, loopTimer;
-
-  best = Number(localStorage.getItem("snakeBest") || 0);
-  bestEl.textContent = best;
-
-  // ──────────── GAME LOGIC ────────────
-  function reset() {
-    snake   = [{ x: 8, y: 10 }, { x: 7, y: 10 }, { x: 6, y: 10 }];
-    dir     = { x: 1, y: 0 };
-    nextDir = { x: 1, y: 0 };
-    score = 0; speed = 140; alive = true;
-    scoreEl.textContent = 0;
-    placeFood();
-  }
-
-  function placeFood() {
-    let fx, fy;
-    do {
-      fx = Math.floor(Math.random() * GRID);
-      fy = Math.floor(Math.random() * GRID);
-    } while (snake.some(s => s.x === fx && s.y === fy));
-    food = { x: fx, y: fy };
-  }
-
-  function step() {
-    if (!alive) return;
-    dir = nextDir;
-    const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
-    if (head.x < 0 || head.y < 0 || head.x >= GRID || head.y >= GRID) return gameOver();
-    if (snake.some(s => s.x === head.x && s.y === head.y)) return gameOver();
-    snake.unshift(head);
-    if (head.x === food.x && head.y === food.y) {
-      score++;
-      scoreEl.textContent = score;
-      if (score % 5 === 0 && speed > 60) speed -= 12;
-      placeFood();
-    } else {
-      snake.pop();
-    }
-    draw();
-    if (alive) loopTimer = setTimeout(step, speed);
-  }
-
-  function gameOver() {
-    alive = false;
-    clearTimeout(loopTimer);
-    if (score > best) {
-      best = score;
-      localStorage.setItem("snakeBest", best);
-      bestEl.textContent = best;
-    }
-    msgEl.innerHTML = "Игра окончена!<br>Счёт: <b>" + score + "</b>";
-    startBtn.textContent = "Ещё раз";
-    overlay.classList.remove("hidden");
-  }
-
-  function startGame() {
-    reset();
-    overlay.classList.add("hidden");
-    draw();
-    loopTimer = setTimeout(step, speed);
-  }
-
-  // ──────────── DRAWING ────────────
-  function cc(seg) {
-    return { cx: seg.x * CELL + CELL / 2, cy: seg.y * CELL + CELL / 2 };
-  }
-
-  function draw() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // faint checkerboard
-    ctx.fillStyle = "rgba(255,255,255,0.025)";
-    for (let i = 0; i < GRID; i++)
-      for (let j = 0; j < GRID; j++)
-        if ((i + j) % 2 === 0) ctx.fillRect(i * CELL, j * CELL, CELL, CELL);
-
-    drawFood();
-    drawBody();       // сплошная труба — тело
-    drawTailBalls();  // 2 отдельных волосатых шарика
-    drawHead();       // продолговатая бордовая голова
-  }
-
-  // ── ТЕЛО: единая толстая труба ──
-  function drawBody() {
-    if (snake.length < 2) return;
-    ctx.save();
-    ctx.lineCap  = "round";
-    ctx.lineJoin = "round";
-
-    // путь через все сегменты
-    function path() {
-      const c0 = cc(snake[0]);
-      ctx.beginPath();
-      ctx.moveTo(c0.cx, c0.cy);
-      for (let i = 1; i < snake.length; i++) {
-        const c = cc(snake[i]);
-        ctx.lineTo(c.cx, c.cy);
-      }
-    }
-
-    // тёмный контур
-    ctx.strokeStyle = "#a07040";
-    ctx.lineWidth   = CELL * 0.84;
-    path(); ctx.stroke();
-
-    // основной телесный цвет
-    ctx.strokeStyle = "#e8b48f";
-    ctx.lineWidth   = CELL * 0.72;
-    path(); ctx.stroke();
-
-    // светлая полоска-блик по центру
-    ctx.strokeStyle = "rgba(255,230,200,0.35)";
-    ctx.lineWidth   = CELL * 0.22;
-    path(); ctx.stroke();
-
-    ctx.restore();
-  }
-
-  // ── ХВОСТ: 2 отдельных волосатых шарика ──
-  function drawTailBalls() {
-    if (snake.length < 2) return;
-    const tail = snake[snake.length - 1];
-    const prev = snake[snake.length - 2];
-    const { cx, cy } = cc(tail);
-
-    let dx = tail.x - prev.x;
-    let dy = tail.y - prev.y;
-    if (dx === 0 && dy === 0) { dx = -dir.x; dy = -dir.y; }
-
-    // перпендикуляр
-    const px = -dy, py = dx;
-    const off = CELL * 0.37;
-    const r   = CELL * 0.30;
-
-    drawFuzzyBall(cx + px * off, cy + py * off, r, 1);
-    drawFuzzyBall(cx - px * off, cy - py * off, r, -1);
-  }
-
-  function drawFuzzyBall(bx, by, r, seed) {
-    const N = 20;
-    ctx.save();
-    ctx.lineCap = "round";
-
-    // волоски
-    for (let i = 0; i < N; i++) {
-      const angle = (i / N) * Math.PI * 2;
-      const len   = r * (0.45 + 0.65 * Math.abs(Math.sin(i * 2.1 + seed * 1.9)));
-      const alpha = 0.45 + 0.4 * Math.abs(Math.sin(i * 0.9));
-      ctx.strokeStyle = `rgba(150,90,45,${alpha})`;
-      ctx.lineWidth   = 1.4;
-      ctx.beginPath();
-      ctx.moveTo(bx + Math.cos(angle) * r * 0.78, by + Math.sin(angle) * r * 0.78);
-      ctx.lineTo(bx + Math.cos(angle) * (r + len), by + Math.sin(angle) * (r + len));
-      ctx.stroke();
-    }
-
-    // сам шарик поверх волосков
-    const grad = ctx.createRadialGradient(bx - r * 0.3, by - r * 0.3, r * 0.08, bx, by, r);
-    grad.addColorStop(0,   "#f5cca8");
-    grad.addColorStop(0.7, "#d49a72");
-    grad.addColorStop(1,   "#a87040");
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(bx, by, r, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.restore();
-  }
-
-  // ── ГОЛОВА: продолговатая бордовая ──
-  function drawHead() {
-    const { cx, cy } = cc(snake[0]);
-    const angle = Math.atan2(dir.y, dir.x);
-
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(angle);
-
-    const rx = CELL * 0.80;   // сильно вытянута
-    const ry = CELL * 0.34;
-
-    // тень
-    ctx.fillStyle = "rgba(0,0,0,0.28)";
-    ctx.beginPath();
-    ctx.ellipse(3, 3, rx, ry, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // основной бордовый овал
-    const g = ctx.createRadialGradient(-rx * 0.25, -ry * 0.3, ry * 0.1, 0, 0, rx);
-    g.addColorStop(0, "#a83040");
-    g.addColorStop(1, "#4a0e1a");
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // блик
-    ctx.fillStyle = "rgba(255,170,170,0.16)";
-    ctx.beginPath();
-    ctx.ellipse(-rx * 0.18, -ry * 0.28, rx * 0.38, ry * 0.22, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // глаза
-    const eR = ry * 0.26;
-    const eX = rx * 0.08;
-    for (const eY of [-ry * 0.52, ry * 0.52]) {
-      ctx.fillStyle = "#fff";
-      ctx.beginPath();
-      ctx.arc(eX, eY, eR, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = "#111";
-      ctx.beginPath();
-      ctx.arc(eX + eR * 0.28, eY, eR * 0.52, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = "rgba(255,255,255,0.7)";
-      ctx.beginPath();
-      ctx.arc(eX + eR * 0.08, eY - eR * 0.2, eR * 0.18, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // рот посередине головы (V-форма)
-    ctx.strokeStyle = "#1a0005";
-    ctx.lineWidth   = CELL * 0.07;
-    ctx.lineCap     = "round";
-    ctx.lineJoin    = "round";
-    ctx.beginPath();
-    ctx.moveTo(rx * 0.48, -ry * 0.42);
-    ctx.lineTo(rx * 0.87, 0);
-    ctx.lineTo(rx * 0.48, ry * 0.42);
-    ctx.stroke();
-
-    ctx.restore();
-  }
-
-  // ── ЕДА ──
-  function drawFood() {
-    const { cx, cy } = cc(food);
-    const r = CELL * 0.34;
-
-    ctx.fillStyle = "rgba(0,0,0,0.28)";
-    ctx.beginPath();
-    ctx.arc(cx + 2, cy + 2, r, 0, Math.PI * 2);
-    ctx.fill();
-
-    const g = ctx.createRadialGradient(cx - r/3, cy - r/3, r/8, cx, cy, r);
-    g.addColorStop(0, "#ff6666");
-    g.addColorStop(1, "#aa1111");
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = "rgba(255,255,255,0.55)";
-    ctx.beginPath();
-    ctx.arc(cx - r * 0.3, cy - r * 0.3, r * 0.22, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.strokeStyle = "#3a7d3a";
-    ctx.lineWidth = 2.5;
-    ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(cx, cy - r);
-    ctx.lineTo(cx + r * 0.42, cy - r * 1.42);
-    ctx.stroke();
-  }
-
-  // ──────────── УПРАВЛЕНИЕ ────────────
-  function setDir(x, y) {
-    if (x === -dir.x && y === -dir.y) return;
-    nextDir = { x, y };
-  }
-
-  // клавиатура
-  document.addEventListener("keydown", (e) => {
-    switch (e.key) {
-      case "ArrowUp":    case "w": case "W": case "ц": case "Ц": setDir(0, -1); break;
-      case "ArrowDown":  case "s": case "S": case "ы": case "Ы": setDir(0,  1); break;
-      case "ArrowLeft":  case "a": case "A": case "ф": case "Ф": setDir(-1, 0); break;
-      case "ArrowRight": case "d": case "D": case "в": case "В": setDir(1,  0); break;
-      default: return;
-    }
-    e.preventDefault();
-  });
-
-  // ── СВАЙПЫ — через прозрачный div на весь экран ──
-  // swipe-layer (z:5) ловит все касания во время игры.
-  // overlay (z:20) выше, поэтому кнопка «Играть» нажимается сквозь него.
-  let t0 = null;
-
-  swipeLayer.addEventListener("touchstart", (e) => {
-    t0 = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-    e.preventDefault();
-  }, { passive: false });
-
-  swipeLayer.addEventListener("touchmove", (e) => {
-    e.preventDefault(); // убираем скролл страницы
-  }, { passive: false });
-
-  swipeLayer.addEventListener("touchend", (e) => {
-    if (!t0) return;
-    const t  = e.changedTouches[0];
-    const dx = t.clientX - t0.x;
-    const dy = t.clientY - t0.y;
-    t0 = null;
-    e.preventDefault();
-    if (Math.abs(dx) > Math.abs(dy)) {
-      if (Math.abs(dx) > 12) setDir(dx > 0 ? 1 : -1, 0);
-    } else {
-      if (Math.abs(dy) > 12) setDir(0, dy > 0 ? 1 : -1);
-    }
-  }, { passive: false });
-
-  startBtn.addEventListener("click", startGame);
-
-  // превью до старта
-  reset(); alive = false; draw();
-})();
-</script>
+</div>
+<footer>обновляется по мере выхода новых игр</footer>
 </body>
 </html>
