@@ -34,7 +34,7 @@ function canvasXY(clientX, clientY) {
 }
 
 // ─── CONSTANTS ──────────────────────────────────────────────
-const GR = 0.5, SPD = 3.2, PW = 20, PH = 42, GROUND = 258, WORLD = 4600;
+const GR = 0.5, JUMP = -9, SPD = 3.2, PW = 20, PH = 42, GROUND = 258, WORLD = 4600;
 
 // ─── LADDERS / LAMPS ────────────────────────────────────────
 // у каждой стремянки своя лампа, пазл (кол-во проводов) и время на него (сек)
@@ -71,7 +71,7 @@ let player, cam, lives, score, fr, gstate, curLad, anim, puzzle, shock, hintAlph
 let pz, poisoner, poisonSide, deathTitle, deathSub;
 
 function initGame() {
-  player = { x:60, y:GROUND-PH, vx:0, onGround:true, facing:1, wf:0 };
+  player = { x:60, y:GROUND-PH, vx:0, vy:0, onGround:true, facing:1, wf:0 };
   cam    = { x:0 };
   lives  = 3;
   score  = 0;
@@ -118,6 +118,17 @@ function tryClimb() {
   return false;
 }
 
+function doJump() {
+  if (gstate !== "walk" || !player.onGround) return;
+  player.vy = JUMP;
+  player.onGround = false;
+}
+
+// ↑ свайп / тап: у стремянки — лезем, иначе — прыгаем
+function jumpOrClimb() {
+  if (!tryClimb()) doJump();
+}
+
 document.addEventListener("touchstart", e => {
   e.preventDefault();
   for (const t of e.changedTouches) {
@@ -148,7 +159,7 @@ document.addEventListener("touchend", e => {
     const quickTap = Date.now() - at.t0 < 240 && Math.abs(at.cx - at.sx) < 18 && Math.abs(at.cy - at.sy) < 18;
 
     if (gstate === "walk") {
-      if (swipeUp || quickTap) tryClimb();
+      if (swipeUp || quickTap) jumpOrClimb();
     } else if (gstate === "puzzle") {
       if (quickTap || (!at.isSwipe && Math.abs(at.cx-at.sx)<24 && Math.abs(at.cy-at.sy)<24))
         puzzleTap(at.cx, at.cy);
@@ -165,14 +176,14 @@ cv.addEventListener("click", e => {
   const { x, y } = canvasXY(e.clientX, e.clientY);
   if (gstate === "puzzle") puzzleTap(x, y);
   else if (gstate === "menu" || gstate === "dead" || gstate === "win") handleMenuClick(x, y);
-  else if (gstate === "walk") tryClimb();
+  else if (gstate === "walk") jumpOrClimb();
 });
 
 // клавиатура
 const keys = {};
 document.addEventListener("keydown", e => {
   keys[e.key] = true;
-  if (gstate === "walk" && (e.key === " " || e.key === "ArrowUp" || e.key === "w")) tryClimb();
+  if (gstate === "walk" && (e.key === " " || e.key === "ArrowUp" || e.key === "w")) jumpOrClimb();
 });
 document.addEventListener("keyup", e => { keys[e.key] = false; });
 
@@ -296,23 +307,28 @@ function updateWalk() {
   else if (goR) { player.vx =  SPD; player.facing =  1; }
   else          { player.vx *= 0.6; }
 
-  if (Math.abs(player.vx) > 0.5) player.wf += 0.2;
+  if (player.onGround && Math.abs(player.vx) > 0.5) player.wf += 0.2;
 
   player.x += player.vx;
   if (player.x < 0) player.x = 0;
   if (player.x + PW > WORLD) player.x = WORLD - PW;
-  player.y = GROUND - PH;
-  player.onGround = true;
 
-  // Серёжи патрулируют. Травят стекломоем, только если Боба ПЕРЕД ними
-  // (со спины можно проскочить — Серёжа смотрит в сторону движения)
+  // вертикаль (прыжок + гравитация)
+  player.vy = Math.min(player.vy + GR, 14);
+  player.y += player.vy;
+  if (player.y >= GROUND - PH) { player.y = GROUND - PH; player.vy = 0; player.onGround = true; }
+  else player.onGround = false;
+
+  // Серёжи патрулируют. Травят стекломоем, только если Боба ПЕРЕД ними и НЕ в прыжке
+  // (со спины можно проскочить, либо перепрыгнуть сверху)
+  const lowEnough = (player.y + PH) > GROUND - 30;
   for (const s of SERGEYS) {
     s.x += s.vx;
     if (s.x < s.min || s.x > s.max) { s.vx *= -1; s.x = Math.max(s.min, Math.min(s.max, s.x)); }
     s.facing = s.vx > 0 ? 1 : -1;
     const d = (player.x + PW/2) - s.x;
     const inFront = (s.facing > 0) ? d > 0 : d < 0;
-    if (Math.abs(d) < 17 && inFront) { startPoison(s); return; }
+    if (Math.abs(d) < 17 && inFront && lowEnough) { startPoison(s); return; }
   }
 
   // финиш — только если все лампы заменены
@@ -493,6 +509,7 @@ function drawBoba(px, py, opts) {
   const f = player.facing;
   const armUp = opts.armUp;       // тянется к лампе
   const dangle = opts.dangle;     // болтается (удар током)
+  const jumping = (gstate === "walk" && !player.onGround);
   const wf = (gstate === "walk" && player.onGround) ? player.wf : 0;
   const ls = Math.sin(wf)*9, as = Math.sin(wf)*7;
 
@@ -501,8 +518,8 @@ function drawBoba(px, py, opts) {
   if (dangle) cx.rotate(Math.sin(fr*0.6)*0.18);
   if (f < 0) cx.scale(-1,1);
 
-  // тень
-  if (gstate === "walk") {
+  // тень (только на земле)
+  if (gstate === "walk" && player.onGround) {
     cx.fillStyle = "rgba(0,0,0,0.14)";
     cx.beginPath(); cx.ellipse(0, PH+2, 14, 5, 0, 0, Math.PI*2); cx.fill();
   }
@@ -511,7 +528,8 @@ function drawBoba(px, py, opts) {
   cx.lineCap = "butt";
   for (const [ox, sgn] of [[-5,1],[5,-1]]) {
     cx.save(); cx.translate(ox,30);
-    if (!dangle) cx.rotate(ls*sgn*Math.PI/180);
+    if (jumping) cx.rotate(sgn*16*Math.PI/180);          // ноги поджаты в прыжке
+    else if (!dangle) cx.rotate(ls*sgn*Math.PI/180);
     else cx.rotate(Math.sin(fr*0.5+sgn)*0.3);
     camoRect(-4,0,7,13);                                  // штанина (камуфляж)
     cx.fillStyle = "#c2a878"; rr(-4,3,7,5,2); cx.fill();  // бежевый наколенник
@@ -535,7 +553,9 @@ function drawBoba(px, py, opts) {
   // руки — камуфляжные рукава, СИНИЕ перчатки
   cx.lineCap = "round";
   // задняя рука
-  cx.save(); cx.translate(-9,18); cx.rotate((-as-12)*Math.PI/180);
+  cx.save(); cx.translate(-9,18);
+  if (jumping) cx.rotate(-0.9);              // вскинута в прыжке
+  else cx.rotate((-as-12)*Math.PI/180);
   cx.strokeStyle = CAMO[1]; cx.lineWidth = 5;
   cx.beginPath(); cx.moveTo(0,0); cx.lineTo(0,12); cx.stroke();
   cx.fillStyle = "#1e88e5"; cx.beginPath(); cx.arc(0,13,3.4,0,Math.PI*2); cx.fill();
@@ -545,6 +565,7 @@ function drawBoba(px, py, opts) {
   cx.save(); cx.translate(9,18);
   if (armUp) cx.rotate(-2.4 + Math.sin(fr*0.3)*0.12);
   else if (dangle) cx.rotate(-2.6);          // держится за лампу
+  else if (jumping) cx.rotate(0.9);          // вскинута в прыжке
   else cx.rotate((as+12)*Math.PI/180);
   cx.strokeStyle = CAMO[0]; cx.lineWidth = 5;
   cx.beginPath(); cx.moveTo(0,0); cx.lineTo(0,12); cx.stroke();
@@ -570,6 +591,7 @@ function drawBoba(px, py, opts) {
   // рот
   cx.strokeStyle = "#2c1a0e"; cx.lineWidth = 1.5;
   if (dangle) { cx.beginPath(); cx.arc(0,14,2.2,Math.PI,Math.PI*2); cx.stroke(); }
+  else if (jumping) { cx.beginPath(); cx.arc(0,12,2.2,0,Math.PI*2); cx.stroke(); }  // «оп!»
   else if (armUp) { cx.beginPath(); cx.arc(0,12,2,0,Math.PI*2); cx.stroke(); }
   else { cx.beginPath(); cx.arc(0,11,2.5,0.1,Math.PI-0.1); cx.stroke(); }
 
@@ -609,6 +631,36 @@ function drawBottle() {
   cx.fillText("СТЕКЛО", 0.5, 5); cx.fillText("МОЙ", 0.5, 8);
 }
 
+// жёлтая подтяжка-линейка от (x1,y1) до (x2,y2) с делениями
+function rulerStrap(x1, y1, x2, y2) {
+  const dx = x2-x1, dy = y2-y1, len = Math.hypot(dx,dy), ang = Math.atan2(dy,dx);
+  cx.save(); cx.translate(x1,y1); cx.rotate(ang);
+  cx.fillStyle = "#fdd835"; cx.fillRect(0,-2.3,len,4.6);          // жёлтая лента
+  cx.strokeStyle = "#f9a825"; cx.lineWidth = 0.6; cx.strokeRect(0,-2.3,len,4.6);
+  cx.strokeStyle = "#222"; cx.lineWidth = 0.8;                    // деления как на линейке
+  for (let t = 2; t < len; t += 2.6) {
+    const big = (Math.round(t/2.6) % 2 === 0);
+    cx.beginPath(); cx.moveTo(t,-2.3); cx.lineTo(t, big ? 0.8 : -0.6); cx.stroke();
+  }
+  cx.restore();
+}
+
+// пакет OZON, из которого Серёжа достаёт стекломой
+function drawOzonBag(x, y) {
+  cx.save(); cx.translate(x,y);
+  // ручки
+  cx.strokeStyle = "#0a3fd0"; cx.lineWidth = 1.4;
+  cx.beginPath(); cx.arc(-3.5,-10,3,Math.PI,0); cx.stroke();
+  cx.beginPath(); cx.arc(3.5,-10,3,Math.PI,0); cx.stroke();
+  // тело пакета
+  cx.fillStyle = "#005bff"; rr(-9,-10,18,20,2); cx.fill();
+  cx.fillStyle = "#0a4fe0"; cx.fillRect(-9,-10,18,3);
+  // надпись ozon + фирменный «хвостик»
+  cx.fillStyle = "#fff"; cx.font = "bold 6px Arial"; cx.textAlign = "center";
+  cx.fillText("ozon", 0, 2);
+  cx.fillStyle = "#f1117e"; cx.beginPath(); cx.arc(8,1.5,1.4,0,Math.PI*2); cx.fill();
+}
+
 // ─── DRAW: СЕРЁЖА ───────────────────────────────────────────
 function drawSergey(px, feetY, facing, opts) {
   opts = opts || {};
@@ -638,10 +690,11 @@ function drawSergey(px, feetY, facing, opts) {
   // пузо — синий комбинезон
   cx.fillStyle = "#1565c0"; cx.beginPath(); cx.ellipse(0,-30,17,19,0,0,Math.PI*2); cx.fill();
   cx.fillStyle = "#1e88e5"; cx.beginPath(); cx.ellipse(2,-27,12,13,0,0,Math.PI*2); cx.fill();
-  // лямки
-  cx.strokeStyle = "#0d47a1"; cx.lineWidth = 3;
-  cx.beginPath(); cx.moveTo(-8,-46); cx.lineTo(-7,-24); cx.moveTo(9,-46); cx.lineTo(7,-24); cx.stroke();
-  cx.fillStyle = "#fdd835"; cx.beginPath(); cx.arc(-7,-26,1.6,0,Math.PI*2); cx.arc(7,-26,1.6,0,Math.PI*2); cx.fill();
+  // жёлтые подтяжки в виде линейки (рулетка-сантиметр)
+  rulerStrap(-8,-47, -7,-22);
+  rulerStrap(8,-47, 7,-22);
+  // застёжки-карабины внизу
+  cx.fillStyle = "#9e9e9e"; cx.fillRect(-9,-25,4,3); cx.fillRect(5,-25,4,3);
 
   // голова
   cx.fillStyle = "#f0c098"; cx.beginPath(); cx.arc(0,-52,9.5,0,Math.PI*2); cx.fill();
@@ -810,8 +863,20 @@ function drawPoison() {
   const sgx = bx + poisonSide*(30 + leave*1.8);
   const sgFacing = leave>0 ? poisonSide : -poisonSide;
 
+  // пакет OZON на полу рядом с Серёжей, пока он не споил Бобу
+  if (pz < 95 && leave === 0) {
+    const bagX = sgx + poisonSide*15;
+    drawOzonBag(bagX, GROUND-2);
+    // бутылка «вырастает» из пакета на первой фазе
+    if (pz < 22) {
+      const rise = (pz/22)*16;
+      cx.save(); cx.translate(bagX, GROUND-12 - rise); drawBottle(); cx.restore();
+    }
+  }
+
   let sgOpts;
-  if (pz < 50)     sgOpts = { frontArm:-1.05, bottle:true, smile:"" };
+  if (pz < 22)     sgOpts = { frontArm:-0.55, smile:"" };               // лезет в пакет
+  else if (pz < 50)sgOpts = { frontArm:-1.05, bottle:true, smile:"" };  // достал, протягивает
   else if (pz<95)  sgOpts = { frontArm:-0.3, smile:"big" };
   else if (pz<280) sgOpts = { frontArm:-0.25, smile:"big" };
   else             sgOpts = { walk:true, smile:"big" };
@@ -821,7 +886,8 @@ function drawPoison() {
 
   // реплика-баннер
   let say;
-  if (pz<50)       say = "Серёжа: — Будешь стекломой? 🍾";
+  if (pz<22)       say = "Серёжа достаёт стекломой из пакета OZON 📦";
+  else if (pz<50)  say = "Серёжа: — Будешь стекломой? 🍾";
   else if (pz<95)  say = "Боба пьёт залпом...";
   else if (pz<130) say = "Боба хватается за горло!";
   else if (pz<165) say = "Бу-э-э... 🤮";
@@ -933,7 +999,7 @@ function drawHUD() {
     cx.save(); cx.globalAlpha = a;
     cx.fillStyle = "rgba(0,0,0,0.55)"; cx.fillRect(0,H-22,W,22);
     cx.fillStyle = "#fff"; cx.font = "10px sans-serif"; cx.textAlign = "center";
-    cx.fillText("◀ держи левую   |   у стремянки: ↑ свайп = залезть   |   держи правую ▶", W/2, H-7);
+    cx.fillText("◀ ходьба ▶   |   ↑ свайп/тап = прыжок   |   у стремянки — залезть", W/2, H-7);
     cx.restore();
   }
 
@@ -975,7 +1041,7 @@ function drawMenu() {
   cx.fillText("7 стремянок: меняй лампы, соединяя провода по цвету.", W/2, 118);
   cx.fillText("Не зевай у патч-панели — иначе ударит током!", W/2, 132);
   cx.fillStyle = "#ffab91";
-  cx.fillText("⚠ Монтажник Серёжа споит стекломоем — обходи со спины!", W/2, 148);
+  cx.fillText("⚠ Серёжа споит стекломоем — перепрыгни его или обойди сзади!", W/2, 148);
 
   // превью Бобы (камуфляж + синие перчатки + ёжик)
   cx.save(); cx.translate(W/2, 196); cx.scale(1.4,1.4);
@@ -1000,7 +1066,7 @@ function drawMenu() {
   cx.fillStyle = "#fff"; cx.font = "bold 20px sans-serif"; cx.textAlign = "center";
   cx.fillText("▶  ИГРАТЬ", W/2, 253);
   cx.fillStyle = "rgba(255,255,255,0.35)"; cx.font = "10px sans-serif";
-  cx.fillText("Жесты: ◀ левая  |  ↑ свайп = залезть  |  правая ▶", W/2, 288);
+  cx.fillText("Жесты: ◀ левая  |  ↑ свайп/тап = прыжок  |  правая ▶", W/2, 288);
 }
 
 function handleMenuClick(x, y) {
