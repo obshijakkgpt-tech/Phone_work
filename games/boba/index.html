@@ -414,6 +414,21 @@ function drawLadder(wx, done) {
 }
 
 // ─── DRAW: БОБА ─────────────────────────────────────────────
+// цифровой камуфляж (серо-зелёный пиксельный)
+const CAMO = ["#b9bdab", "#9aa089", "#d7dacb", "#7e856b"];
+function camoRect(x, y, w, h) {
+  cx.fillStyle = CAMO[0]; cx.fillRect(x, y, w, h);
+  const spots = [
+    [0.08,0.10,0.30,0.18,1],[0.55,0.04,0.28,0.20,3],
+    [0.22,0.42,0.26,0.20,2],[0.60,0.46,0.30,0.22,1],
+    [0.05,0.70,0.26,0.20,3],[0.56,0.74,0.30,0.18,2]
+  ];
+  for (const [fx,fy,fw,fh,ci] of spots) {
+    cx.fillStyle = CAMO[ci];
+    cx.fillRect(x+fx*w, y+fy*h, Math.max(2,fw*w), Math.max(2,fh*h));
+  }
+}
+
 function drawBoba(px, py, opts) {
   opts = opts || {};
   const f = player.facing;
@@ -433,69 +448,71 @@ function drawBoba(px, py, opts) {
     cx.beginPath(); cx.ellipse(0, PH+2, 14, 5, 0, 0, Math.PI*2); cx.fill();
   }
 
-  // пояс с инструментом
-  cx.fillStyle = "#3e2723";
-
-  // ноги
+  // ноги — камуфляжные штаны, бежевые наколенники и ботинки
   cx.lineCap = "butt";
   for (const [ox, sgn] of [[-5,1],[5,-1]]) {
     cx.save(); cx.translate(ox,30);
     if (!dangle) cx.rotate(ls*sgn*Math.PI/180);
     else cx.rotate(Math.sin(fr*0.5+sgn)*0.3);
-    cx.fillStyle = "#37474f"; cx.fillRect(-4,0,7,13);   // штаны
-    cx.fillStyle = "#212121"; cx.fillRect(-5,11,9,6);   // ботинок
+    camoRect(-4,0,7,13);                                  // штанина (камуфляж)
+    cx.fillStyle = "#c2a878"; rr(-4,3,7,5,2); cx.fill();  // бежевый наколенник
+    cx.strokeStyle = "#9c8456"; cx.lineWidth = 0.8; rr(-4,3,7,5,2); cx.stroke();
+    cx.fillStyle = "#a98c5c"; cx.fillRect(-5,11,9,6);     // песочный ботинок
+    cx.fillStyle = "#8a6f43"; cx.fillRect(-5,15,9,2);
     cx.restore();
   }
 
-  // тело — зелёная роба
-  cx.fillStyle = "#2e7d32"; cx.fillRect(-9,14,18,18);
-  cx.fillStyle = "#1b5e20"; cx.fillRect(-9,14,18,3);
-  // карман + застёжка
-  cx.fillStyle = "#1b5e20"; cx.fillRect(-7,22,6,6);
-  cx.strokeStyle = "#cddc39"; cx.lineWidth = 1.5;
-  cx.beginPath(); cx.moveTo(0,15); cx.lineTo(0,31); cx.stroke();
-  // светоотражающая полоса
-  cx.fillStyle = "#fdd835"; cx.fillRect(-9,18,18,2.5);
+  // тело — камуфляжная куртка (ACU)
+  camoRect(-9,14,18,18);
+  // воротник / молния
+  cx.fillStyle = "#8a9078"; cx.fillRect(-9,14,18,3);
+  cx.strokeStyle = "#6f7560"; cx.lineWidth = 1; cx.beginPath(); cx.moveTo(0,15); cx.lineTo(0,31); cx.stroke();
+  // нагрудный карман с клапаном
+  cx.fillStyle = "#9aa089"; cx.fillRect(-7,22,6,6);
+  cx.strokeStyle = "#7e856b"; cx.lineWidth = 0.8; cx.strokeRect(-7,22,6,6);
+  // нашивка-флажок на плече
+  cx.fillStyle = "#b71c1c"; cx.fillRect(3,16,5,2);
 
-  // руки
+  // руки — камуфляжные рукава, СИНИЕ перчатки
   cx.lineCap = "round";
   // задняя рука
   cx.save(); cx.translate(-9,18); cx.rotate((-as-12)*Math.PI/180);
-  cx.strokeStyle = "#2e7d32"; cx.lineWidth = 5;
-  cx.beginPath(); cx.moveTo(0,0); cx.lineTo(0,13); cx.stroke();
-  cx.fillStyle = "#f5cba7"; cx.beginPath(); cx.arc(0,13,3,0,Math.PI*2); cx.fill();
+  cx.strokeStyle = CAMO[1]; cx.lineWidth = 5;
+  cx.beginPath(); cx.moveTo(0,0); cx.lineTo(0,12); cx.stroke();
+  cx.fillStyle = "#1e88e5"; cx.beginPath(); cx.arc(0,13,3.4,0,Math.PI*2); cx.fill();
+  cx.strokeStyle = "#0d47a1"; cx.lineWidth = 1; cx.beginPath(); cx.arc(0,13,3.4,0,Math.PI*2); cx.stroke();
   cx.restore();
   // передняя рука (поднята к лампе при замене)
   cx.save(); cx.translate(9,18);
   if (armUp) cx.rotate(-2.4 + Math.sin(fr*0.3)*0.12);
   else if (dangle) cx.rotate(-2.6);          // держится за лампу
   else cx.rotate((as+12)*Math.PI/180);
-  cx.strokeStyle = "#2e7d32"; cx.lineWidth = 5;
-  cx.beginPath(); cx.moveTo(0,0); cx.lineTo(0,13); cx.stroke();
-  cx.fillStyle = "#f5cba7"; cx.beginPath(); cx.arc(0,13,3,0,Math.PI*2); cx.fill();
+  cx.strokeStyle = CAMO[0]; cx.lineWidth = 5;
+  cx.beginPath(); cx.moveTo(0,0); cx.lineTo(0,12); cx.stroke();
+  cx.fillStyle = "#1e88e5"; cx.beginPath(); cx.arc(0,13,3.4,0,Math.PI*2); cx.fill();
+  cx.strokeStyle = "#0d47a1"; cx.lineWidth = 1; cx.beginPath(); cx.arc(0,13,3.4,0,Math.PI*2); cx.stroke();
   cx.restore();
 
-  // голова
-  cx.fillStyle = "#f5cba7"; cx.beginPath(); cx.arc(0,8,9,0,Math.PI*2); cx.fill();
+  // голова: короткая стрижка «ёжиком» + лицо (без каски)
+  cx.fillStyle = "#4a3526"; cx.beginPath(); cx.arc(0,7,9,0,Math.PI*2); cx.fill();      // волосы
+  cx.fillStyle = "#f5cba7"; cx.beginPath(); cx.arc(0,9,8.2,0,Math.PI*2); cx.fill();    // лицо
+  // ухо
+  cx.fillStyle = "#f0bd95"; cx.beginPath(); cx.arc(-7,9,2,0,Math.PI*2); cx.fill();
   // глаза
   cx.fillStyle = "#2c1a0e";
   if (dangle) {
-    cx.font = "bold 7px sans-serif"; cx.fillText("X", 1.5,9.5); cx.fillText("X", -4.5,9.5);
+    cx.font = "bold 7px sans-serif"; cx.fillText("X", 1.5,10); cx.fillText("X", -4.5,10);
   } else {
-    cx.beginPath(); cx.arc(3,7,1.6,0,Math.PI*2); cx.arc(-3,7,1.6,0,Math.PI*2); cx.fill();
+    cx.beginPath(); cx.arc(3,8,1.6,0,Math.PI*2); cx.arc(-3,8,1.6,0,Math.PI*2); cx.fill();
   }
+  // брови
+  cx.strokeStyle = "#4a3526"; cx.lineWidth = 1.2;
+  cx.beginPath(); cx.moveTo(-5,5.5); cx.lineTo(-1,6); cx.moveTo(1,6); cx.lineTo(5,5.5); cx.stroke();
   // рот
   cx.strokeStyle = "#2c1a0e"; cx.lineWidth = 1.5;
-  if (dangle) { cx.beginPath(); cx.arc(0,13,2.2,Math.PI,Math.PI*2); cx.stroke(); }
-  else if (armUp) { cx.beginPath(); cx.arc(0,11,2,0,Math.PI*2); cx.stroke(); }
-  else { cx.beginPath(); cx.arc(0,10,2.5,0.1,Math.PI-0.1); cx.stroke(); }
-  // усы
-  cx.fillStyle = "#4e342e"; cx.fillRect(-4,11,8,1.6);
-
-  // каска (синяя — электрик)
-  cx.fillStyle = "#1565c0"; cx.beginPath(); cx.arc(0,3,11,Math.PI,0); cx.fill();
-  cx.fillRect(-13,2,26,4);
-  cx.fillStyle = "#0d47a1"; cx.fillRect(-11,0,22,3);
+  if (dangle) { cx.beginPath(); cx.arc(0,14,2.2,Math.PI,Math.PI*2); cx.stroke(); }
+  else if (armUp) { cx.beginPath(); cx.arc(0,12,2,0,Math.PI*2); cx.stroke(); }
+  else { cx.beginPath(); cx.arc(0,11,2.5,0.1,Math.PI-0.1); cx.stroke(); }
 
   cx.restore();
 }
@@ -664,20 +681,23 @@ function drawMenu() {
   cx.fillText("Залезай на стремянки и меняй лампочки.", W/2, 120);
   cx.fillText("Соедини провода по цвету, пока не ударило током!", W/2, 136);
 
-  // превью Бобы
+  // превью Бобы (камуфляж + синие перчатки + ёжик)
   cx.save(); cx.translate(W/2, 196); cx.scale(1.4,1.4);
-  cx.fillStyle = "#37474f"; cx.fillRect(-5,12,6,14); cx.fillRect(1,12,6,14);
-  cx.fillStyle = "#212121"; cx.fillRect(-6,23,8,5); cx.fillRect(1,23,8,5);
-  cx.fillStyle = "#2e7d32"; cx.fillRect(-9,-2,18,16);
-  cx.fillStyle = "#fdd835"; cx.fillRect(-9,2,18,2.5);
-  cx.strokeStyle = "#2e7d32"; cx.lineWidth = 5; cx.lineCap = "round";
-  cx.beginPath(); cx.moveTo(-9,2); cx.lineTo(-14,14); cx.stroke();
-  cx.beginPath(); cx.moveTo(9,2); cx.lineTo(14,14); cx.stroke();
-  cx.fillStyle = "#f5cba7"; cx.beginPath(); cx.arc(0,-10,9,0,Math.PI*2); cx.fill();
-  cx.fillStyle = "#1565c0"; cx.beginPath(); cx.arc(0,-13,11,Math.PI,0); cx.fill(); cx.fillRect(-13,-14,26,4);
-  cx.fillStyle = "#2c1a0e"; cx.beginPath(); cx.arc(3,-11,1.5,0,Math.PI*2); cx.arc(-3,-11,1.5,0,Math.PI*2); cx.fill();
-  cx.fillStyle = "#4e342e"; cx.fillRect(-4,-6,8,1.6);
-  cx.strokeStyle = "#2c1a0e"; cx.lineWidth = 1.5; cx.beginPath(); cx.arc(0,-7,2.2,0.1,Math.PI-0.1); cx.stroke();
+  camoRect(-5,12,6,13); camoRect(1,12,6,13);                       // штанины
+  cx.fillStyle = "#c2a878"; rr(-5,15,6,5,2); cx.fill(); rr(1,15,6,5,2); cx.fill();  // наколенники
+  cx.fillStyle = "#a98c5c"; cx.fillRect(-6,23,8,5); cx.fillRect(1,23,8,5);          // ботинки
+  camoRect(-9,-2,18,16);                                           // куртка
+  cx.fillStyle = "#b71c1c"; cx.fillRect(3,0,5,2);                  // нашивка
+  cx.strokeStyle = CAMO[0]; cx.lineWidth = 5; cx.lineCap = "round";
+  cx.beginPath(); cx.moveTo(-9,2); cx.lineTo(-13,13); cx.stroke();
+  cx.beginPath(); cx.moveTo(9,2); cx.lineTo(13,13); cx.stroke();
+  cx.fillStyle = "#1e88e5"; cx.beginPath(); cx.arc(-13,13,3.4,0,Math.PI*2); cx.arc(13,13,3.4,0,Math.PI*2); cx.fill();
+  cx.fillStyle = "#4a3526"; cx.beginPath(); cx.arc(0,-11,9,0,Math.PI*2); cx.fill();   // волосы
+  cx.fillStyle = "#f5cba7"; cx.beginPath(); cx.arc(0,-9,8.2,0,Math.PI*2); cx.fill();  // лицо
+  cx.fillStyle = "#2c1a0e"; cx.beginPath(); cx.arc(3,-10,1.5,0,Math.PI*2); cx.arc(-3,-10,1.5,0,Math.PI*2); cx.fill();
+  cx.strokeStyle = "#4a3526"; cx.lineWidth = 1.2;
+  cx.beginPath(); cx.moveTo(-5,-12.5); cx.lineTo(-1,-12); cx.moveTo(1,-12); cx.lineTo(5,-12.5); cx.stroke();
+  cx.strokeStyle = "#2c1a0e"; cx.lineWidth = 1.5; cx.beginPath(); cx.arc(0,-6,2.2,0.1,Math.PI-0.1); cx.stroke();
   cx.restore();
 
   cx.fillStyle = "#43a047"; rr(W/2-96,224,192,46,23); cx.fill();
