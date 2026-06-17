@@ -6,13 +6,8 @@
 <title>Валера — Слаботочник</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
-body {
-  background: #000;
-  display: flex; align-items: center; justify-content: center;
-  min-height: 100vh; overflow: hidden;
-  touch-action: none; user-select: none;
-}
-canvas { display: block; }
+body { margin:0; overflow:hidden; background:#000; touch-action:none; user-select:none; }
+canvas { position:fixed; top:0; left:0; display:block; }
 </style>
 </head>
 <body>
@@ -28,16 +23,14 @@ const W = 480, H = 300;
 cv.width = W; cv.height = H;
 
 function resize() {
-  const s = Math.min(window.innerWidth / W, window.innerHeight / H);
-  cv.style.width  = (W * s) + "px";
-  cv.style.height = (H * s) + "px";
+  cv.width  = window.innerWidth;
+  cv.height = window.innerHeight;
 }
 window.addEventListener("resize", resize);
 resize();
 
 function canvasXY(clientX, clientY) {
-  const r = cv.getBoundingClientRect();
-  return { x: (clientX - r.left) * (W / r.width), y: (clientY - r.top) * (H / r.height) };
+  return { x: clientX * W / cv.width, y: clientY * H / cv.height };
 }
 
 // ─── CONSTANTS ──────────────────────────────────────────────
@@ -294,7 +287,6 @@ function update() {
 
   if (fr % 2 === 0) {
     trail.push({ x: player.x + PW/2, y: player.y + PH - 6 });
-    if (trail.length > 500) trail.shift();
   }
 }
 
@@ -304,7 +296,6 @@ function die() {
   player.x = player.cpX; player.y = player.cpY;
   player.vx = player.vy = 0;
   jumpsLeft = 2;
-  trail = [];
 }
 
 // ─── ТЕХНАЗЗОР ──────────────────────────────────────────────
@@ -801,6 +792,7 @@ initGame(); gstate = "menu";
 function loop() {
   requestAnimationFrame(loop);
   fr++;
+  cx.setTransform(cv.width/W, 0, 0, cv.height/H, 0, 0);
   if (gstate === "menu") { drawMenu(); return; }
   update();
   drawBG(); drawPlatforms(); drawCheckpoints(); drawGoal();
