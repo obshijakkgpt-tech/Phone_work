@@ -34,19 +34,33 @@ function canvasXY(clientX, clientY) {
 }
 
 // ─── CONSTANTS ──────────────────────────────────────────────
-const GR = 0.5, SPD = 3.2, PW = 20, PH = 42, GROUND = 258, WORLD = 2700;
+const GR = 0.5, SPD = 3.2, PW = 20, PH = 42, GROUND = 258, WORLD = 4600;
 
 // ─── LADDERS / LAMPS ────────────────────────────────────────
-// у каждой стремянки своя лампа сверху и пазл (кол-во проводов)
+// у каждой стремянки своя лампа, пазл (кол-во проводов) и время на него (сек)
 const LADDERS_INIT = [
-  { x:380,  wires:3, done:false },
-  { x:920,  wires:3, done:false },
-  { x:1500, wires:4, done:false },
-  { x:2120, wires:4, done:false },
+  { x:360,  wires:3, time:13, done:false },
+  { x:880,  wires:3, time:12, done:false },
+  { x:1440, wires:4, time:12, done:false },
+  { x:2040, wires:4, time:11, done:false },
+  { x:2720, wires:5, time:11, done:false },
+  { x:3420, wires:5, time:10, done:false },
+  { x:4060, wires:5, time:9,  done:false },
 ];
 let LADDERS = [];
 
-const GOAL_X = 2600;
+const GOAL_X = 4480;
+
+// ─── СЕРЁЖА — монтажник-отравитель ──────────────────────────
+// толстенький в синей робе, патрулирует коридор; коснулся Бобы — травит стекломоем
+const SERGEYS_INIT = [
+  { x:1180, min:1060, max:1320, vx:1.7 },
+  { x:1820, min:1700, max:1960, vx:-1.9 },
+  { x:2440, min:2300, max:2560, vx:2.0 },
+  { x:3120, min:2980, max:3260, vx:-1.8 },
+  { x:3760, min:3620, max:3900, vx:2.1 },
+];
+let SERGEYS = [];
 
 // цвета проводов
 const WCOL = ["#e53935", "#1e88e5", "#43a047", "#fdd835", "#8e24aa"];
@@ -54,6 +68,7 @@ const WCOL_DK = ["#b71c1c", "#0d47a1", "#1b5e20", "#f9a825", "#4a148c"];
 
 // ─── STATE ──────────────────────────────────────────────────
 let player, cam, lives, score, fr, gstate, curLad, anim, puzzle, shock, hintAlpha;
+let pz, poisoner, poisonSide, deathTitle, deathSub;
 
 function initGame() {
   player = { x:60, y:GROUND-PH, vx:0, onGround:true, facing:1, wf:0 };
@@ -65,8 +80,14 @@ function initGame() {
   anim   = 0;
   puzzle = null;
   shock  = 0;
+  pz     = 0;
+  poisoner = null;
+  poisonSide = 1;
+  deathTitle = "⚡ КОРОТКОЕ ЗАМЫКАНИЕ";
+  deathSub   = "";
   hintAlpha = 3 * 60;
-  LADDERS = LADDERS_INIT.map(l => Object.assign({}, l, { done:false }));
+  LADDERS  = LADDERS_INIT.map(l => Object.assign({}, l, { done:false }));
+  SERGEYS  = SERGEYS_INIT.map(s => Object.assign({}, s));
   gstate = "walk";
 }
 
@@ -174,12 +195,13 @@ function startPuzzle() {
     const j = Math.floor(Math.random() * (i + 1));
     [order[i], order[j]] = [order[j], order[i]];
   }
+  const secs = (l.time || 13) * 60;
   puzzle = {
     n, order,
     selLeft: -1,
     conn: new Array(n).fill(-1),   // conn[colorIdx] = правый ряд, к которому подключён
-    time: 13 * 60,
-    timeMax: 13 * 60,
+    time: secs,
+    timeMax: secs,
     wrongFlash: 0, wrongL: -1, wrongR: -1
   };
   gstate = "puzzle";
@@ -247,6 +269,24 @@ function update() {
   else if (gstate === "descend") updateDescend();
   else if (gstate === "puzzle")  updatePuzzle();
   else if (gstate === "shock")   updateShock();
+  else if (gstate === "poison")  updatePoison();
+}
+
+// фазы отравления (кадры при 60fps):
+// 0-50 Серёжа протягивает бутылку → 50-95 Боба пьёт → 95-130 хватается за горло
+// 130-165 блюёт → 165-280 падает, трясёт ногами, пена изо рта → 280+ финал
+function updatePoison() {
+  pz++;
+  if (pz === 280) lives--;
+  if (pz >= 360) {
+    if (lives <= 0) { deathTitle = "☠️ ОТРАВЛЕНИЕ СТЕКЛОМОЕМ"; deathSub = "Серёжа всё-таки споил Бобу..."; gstate = "dead"; return; }
+    // оживаем у предыдущей безопасной точки
+    const safeX = (poisoner ? Math.max(0, (poisonSide > 0 ? poisoner.min : poisoner.max) - poisonSide*160) : player.x - 200);
+    player.x = Math.max(0, safeX);
+    player.y = GROUND - PH;
+    poisoner = null;
+    gstate = "walk";
+  }
 }
 
 function updateWalk() {
@@ -264,6 +304,17 @@ function updateWalk() {
   player.y = GROUND - PH;
   player.onGround = true;
 
+  // Серёжи патрулируют. Травят стекломоем, только если Боба ПЕРЕД ними
+  // (со спины можно проскочить — Серёжа смотрит в сторону движения)
+  for (const s of SERGEYS) {
+    s.x += s.vx;
+    if (s.x < s.min || s.x > s.max) { s.vx *= -1; s.x = Math.max(s.min, Math.min(s.max, s.x)); }
+    s.facing = s.vx > 0 ? 1 : -1;
+    const d = (player.x + PW/2) - s.x;
+    const inFront = (s.facing > 0) ? d > 0 : d < 0;
+    if (Math.abs(d) < 17 && inFront) { startPoison(s); return; }
+  }
+
   // финиш — только если все лампы заменены
   if (player.x + PW/2 > GOAL_X && LADDERS.every(l => l.done)) {
     gstate = "win"; score += 500;
@@ -271,6 +322,14 @@ function updateWalk() {
 
   cam.x += (player.x - 150 - cam.x) * 0.12;
   cam.x = Math.max(0, Math.min(cam.x, WORLD - W));
+}
+
+function startPoison(s) {
+  poisoner = s;
+  poisonSide = (s.x >= player.x + PW/2) ? 1 : -1;  // с какой стороны стоит Серёжа
+  player.facing = poisonSide;                       // Боба повёрнут к нему
+  pz = 0;
+  gstate = "poison";
 }
 
 function updateClimb() {
@@ -304,7 +363,7 @@ function updateShock() {
   shock++;
   if (shock === 1) lives--;
   if (shock >= 110) {
-    if (lives <= 0) { gstate = "dead"; return; }
+    if (lives <= 0) { deathTitle = "⚡ КОРОТКОЕ ЗАМЫКАНИЕ"; deathSub = "Бобу выбило током..."; gstate = "dead"; return; }
     // слезает и можно повторить
     player.y = GROUND - PH;
     player.x = LADDERS[curLad].x + 40;
@@ -538,6 +597,241 @@ function drawShock(px, py) {
   }
 }
 
+// ─── DRAW: БУТЫЛКА СТЕКЛОМОЯ ────────────────────────────────
+function drawBottle() {
+  cx.fillStyle = "#1565c0"; rr(-3.5,-2,8,13,2); cx.fill();      // синяя жидкость
+  cx.fillStyle = "#42a5f5"; rr(-3.5,-2,8,4,2); cx.fill();
+  cx.fillStyle = "#cfd8dc"; cx.fillRect(-2,-6,5,4);             // горлышко
+  cx.fillStyle = "#b0bec5"; cx.fillRect(-2.5,-8.5,6,2.8);       // распылитель
+  cx.fillStyle = "#eceff1"; rr(-3.5,2,8,6,1); cx.fill();        // этикетка
+  cx.strokeStyle = "#90a4ae"; cx.lineWidth = 0.5; rr(-3.5,2,8,6,1); cx.stroke();
+  cx.fillStyle = "#0d47a1"; cx.font = "bold 3px sans-serif"; cx.textAlign = "center";
+  cx.fillText("СТЕКЛО", 0.5, 5); cx.fillText("МОЙ", 0.5, 8);
+}
+
+// ─── DRAW: СЕРЁЖА ───────────────────────────────────────────
+function drawSergey(px, feetY, facing, opts) {
+  opts = opts || {};
+  cx.save(); cx.translate(px, feetY);
+  if (facing < 0) cx.scale(-1, 1);
+
+  // тень
+  cx.fillStyle = "rgba(0,0,0,0.14)";
+  cx.beginPath(); cx.ellipse(0,-1,18,5,0,0,Math.PI*2); cx.fill();
+
+  // ноги (короткие, толстые)
+  const lk = opts.walk ? Math.sin(fr*0.3)*8 : 0;
+  for (const [ox,sgn] of [[-6,1],[6,-1]]) {
+    cx.save(); cx.translate(ox,-17); cx.rotate(lk*sgn*Math.PI/180);
+    cx.fillStyle = "#0d47a1"; cx.fillRect(-4,0,9,17);
+    cx.fillStyle = "#222"; cx.fillRect(-5,15,11,5);
+    cx.restore();
+  }
+
+  // задняя рука
+  cx.save(); cx.translate(-14,-42); cx.rotate(opts.backArm!=null?opts.backArm:0.35);
+  cx.strokeStyle = "#1565c0"; cx.lineWidth = 6; cx.lineCap = "round";
+  cx.beginPath(); cx.moveTo(0,0); cx.lineTo(0,16); cx.stroke();
+  cx.fillStyle = "#f0c098"; cx.beginPath(); cx.arc(0,16,3.6,0,Math.PI*2); cx.fill();
+  cx.restore();
+
+  // пузо — синий комбинезон
+  cx.fillStyle = "#1565c0"; cx.beginPath(); cx.ellipse(0,-30,17,19,0,0,Math.PI*2); cx.fill();
+  cx.fillStyle = "#1e88e5"; cx.beginPath(); cx.ellipse(2,-27,12,13,0,0,Math.PI*2); cx.fill();
+  // лямки
+  cx.strokeStyle = "#0d47a1"; cx.lineWidth = 3;
+  cx.beginPath(); cx.moveTo(-8,-46); cx.lineTo(-7,-24); cx.moveTo(9,-46); cx.lineTo(7,-24); cx.stroke();
+  cx.fillStyle = "#fdd835"; cx.beginPath(); cx.arc(-7,-26,1.6,0,Math.PI*2); cx.arc(7,-26,1.6,0,Math.PI*2); cx.fill();
+
+  // голова
+  cx.fillStyle = "#f0c098"; cx.beginPath(); cx.arc(0,-52,9.5,0,Math.PI*2); cx.fill();
+  cx.fillStyle = "#e8b487"; cx.beginPath(); cx.ellipse(0,-44,7,3.5,0,0,Math.PI*2); cx.fill(); // второй подбородок
+  // венчик волос вокруг лысины
+  cx.fillStyle = "#6d4c2f";
+  cx.beginPath(); cx.arc(-8,-52,2.6,0,Math.PI*2); cx.arc(8,-52,2.6,0,Math.PI*2); cx.fill();
+  cx.fillRect(-9,-54,18,2);
+  // лысина-блик
+  cx.fillStyle = "#f7ceaa"; cx.beginPath(); cx.ellipse(0,-57,5,3,0,0,Math.PI*2); cx.fill();
+  // хитрые брови домиком
+  cx.strokeStyle = "#5a3d24"; cx.lineWidth = 1.3;
+  cx.beginPath(); cx.moveTo(-6,-56); cx.lineTo(-1,-54.5); cx.moveTo(1,-54.5); cx.lineTo(6,-56); cx.stroke();
+  // глаза-хитринки
+  cx.fillStyle = "#2c1a0e";
+  cx.beginPath(); cx.arc(3,-52.5,1.5,0,Math.PI*2); cx.arc(-3,-52.5,1.5,0,Math.PI*2); cx.fill();
+  // ухмылка
+  cx.strokeStyle = "#7a3b1a"; cx.lineWidth = 1.7;
+  if (opts.smile === "big") { cx.beginPath(); cx.arc(0,-47,4.5,0.05,Math.PI-0.05); cx.stroke(); }
+  else { cx.beginPath(); cx.arc(1.5,-47,3.5,0.25,Math.PI-0.6); cx.stroke(); }
+  // щетина
+  cx.fillStyle = "rgba(70,50,35,0.22)";
+  cx.beginPath(); cx.arc(0,-45,7,0.15,Math.PI-0.15); cx.fill();
+
+  // передняя рука (может протягивать бутылку)
+  const fa = (opts.frontArm!=null) ? opts.frontArm : (-0.3 - (opts.walk?Math.sin(fr*0.3)*0.4:0));
+  cx.save(); cx.translate(14,-42); cx.rotate(fa);
+  cx.strokeStyle = "#1565c0"; cx.lineWidth = 6; cx.lineCap = "round";
+  cx.beginPath(); cx.moveTo(0,0); cx.lineTo(0,17); cx.stroke();
+  cx.fillStyle = "#f0c098"; cx.beginPath(); cx.arc(0,17,3.6,0,Math.PI*2); cx.fill();
+  if (opts.bottle) { cx.save(); cx.translate(0,19); cx.rotate(-fa); drawBottle(); cx.restore(); }
+  cx.restore();
+
+  cx.restore();
+}
+
+// ─── DRAW: БОБА ОТРАВЛЕН (стоя, фазы A–D) ───────────────────
+function drawBobaPoison(bx, by) {
+  if (pz >= 165) { drawBobaCollapsed(bx); return; }
+  const f = poisonSide;
+  const lean = (pz>=130) ? 0.5 : 0;     // наклон вперёд при рвоте
+
+  cx.save(); cx.translate(bx, by);
+  if (f < 0) cx.scale(-1,1);
+  if (lean) { cx.translate(0,30); cx.rotate(lean); cx.translate(0,-30); }
+
+  cx.fillStyle="rgba(0,0,0,0.14)";
+  cx.beginPath(); cx.ellipse(0,PH+2,14,5,0,0,Math.PI*2); cx.fill();
+
+  // ноги (дрожь после фазы C)
+  cx.lineCap="butt";
+  for (const [ox,sgn] of [[-5,1],[5,-1]]) {
+    cx.save(); cx.translate(ox,30);
+    if (pz>=95) cx.rotate(Math.sin(fr*0.9+sgn*2)*0.06);
+    camoRect(-4,0,7,13);
+    cx.fillStyle="#c2a878"; rr(-4,3,7,5,2); cx.fill();
+    cx.fillStyle="#a98c5c"; cx.fillRect(-5,11,9,6);
+    cx.restore();
+  }
+  // тело
+  camoRect(-9,14,18,18);
+  cx.fillStyle="#8a9078"; cx.fillRect(-9,14,18,3);
+  cx.fillStyle="#b71c1c"; cx.fillRect(3,16,5,2);
+
+  // руки
+  cx.lineCap="round";
+  function arm(axp,ayp,ang,col){
+    cx.save(); cx.translate(axp,ayp); cx.rotate(ang);
+    cx.strokeStyle=col; cx.lineWidth=5; cx.beginPath(); cx.moveTo(0,0); cx.lineTo(0,13); cx.stroke();
+    cx.fillStyle="#1e88e5"; cx.beginPath(); cx.arc(0,13,3.4,0,Math.PI*2); cx.fill();
+    cx.strokeStyle="#0d47a1"; cx.lineWidth=1; cx.beginPath(); cx.arc(0,13,3.4,0,Math.PI*2); cx.stroke();
+    cx.restore();
+  }
+  if (pz < 50)       { arm(-9,18, 0.25, CAMO[1]); arm(9,18, -1.0, CAMO[0]); }   // тянется к бутылке
+  else if (pz < 95)  { arm(-9,18, 0.25, CAMO[1]); arm(9,18, -2.5, CAMO[0]); }   // пьёт
+  else if (pz < 130) { arm(-9,18, -2.2, CAMO[1]); arm(9,18, -2.6, CAMO[0]); }   // за горло
+  else               { arm(-9,18, -0.5, CAMO[1]); arm(9,18,  0.7, CAMO[0]); }   // блюёт
+
+  // голова
+  const sick = pz>=95;
+  cx.fillStyle="#4a3526"; cx.beginPath(); cx.arc(0,7,9,0,Math.PI*2); cx.fill();
+  cx.fillStyle= sick ? "#a9c98f" : "#f5cba7"; cx.beginPath(); cx.arc(0,9,8.2,0,Math.PI*2); cx.fill();
+  cx.fillStyle="#2c1a0e";
+  if (pz>=95) {  // зажмурился от боли (крестики)
+    cx.strokeStyle="#2c1a0e"; cx.lineWidth=1.4;
+    cx.beginPath();
+    cx.moveTo(-5,6); cx.lineTo(-1,9); cx.moveTo(-1,6); cx.lineTo(-5,9);
+    cx.moveTo(1,6); cx.lineTo(5,9); cx.moveTo(5,6); cx.lineTo(1,9); cx.stroke();
+  } else {
+    cx.beginPath(); cx.arc(3,8,1.8,0,Math.PI*2); cx.arc(-3,8,1.8,0,Math.PI*2); cx.fill();
+  }
+  // рот
+  if (pz<50) { cx.strokeStyle="#2c1a0e"; cx.lineWidth=1.5; cx.beginPath(); cx.arc(0,12,2,0,Math.PI*2); cx.stroke(); }
+  else if (pz<95) { cx.fillStyle="#5d3a1a"; cx.beginPath(); cx.ellipse(2,11,2.5,3,0,0,Math.PI*2); cx.fill(); }
+  else { cx.fillStyle="#5d3a1a"; cx.beginPath(); cx.arc(0,13,3,0,Math.PI*2); cx.fill(); }
+
+  cx.restore();
+
+  // бутылка у рта во время питья
+  if (pz>=50 && pz<95) {
+    cx.save(); cx.translate(bx + f*5, by+6); cx.rotate(f*-0.9); drawBottle(); cx.restore();
+  }
+  // струя рвоты
+  if (pz>=130 && pz<165) {
+    const vx0 = bx + f*9, vy0 = by+16;
+    cx.fillStyle="#7cb342";
+    for (let i=0;i<6;i++){
+      const t=i/6, vxp=vx0+f*(6+t*24+Math.sin(fr*0.5+i)*2), vyp=vy0+t*16;
+      cx.beginPath(); cx.arc(vxp,vyp,3+t*2,0,Math.PI*2); cx.fill();
+    }
+    cx.fillStyle="#9ccc65"; cx.beginPath(); cx.ellipse(vx0+f*32, GROUND-2, 14,4,0,0,Math.PI*2); cx.fill();
+  }
+}
+
+// ─── DRAW: БОБА УПАЛ (фазы E–F: трясёт ногами, пена) ────────
+function drawBobaCollapsed(bx) {
+  const f = poisonSide;
+  cx.save(); cx.translate(bx, GROUND-5);
+  if (f < 0) cx.scale(-1,1);
+
+  // лужа рвоты
+  cx.fillStyle="#9ccc65"; cx.beginPath(); cx.ellipse(-2,2,24,5,0,0,Math.PI*2); cx.fill();
+
+  // ноги дёргаются вверх
+  const k1=Math.sin(fr*0.7)*11, k2=Math.sin(fr*0.7+1.3)*11;
+  cx.lineCap="round";
+  cx.strokeStyle=CAMO[1]; cx.lineWidth=7;
+  cx.save(); cx.translate(15,-3); cx.rotate((-65+k1)*Math.PI/180); cx.beginPath(); cx.moveTo(0,0); cx.lineTo(0,15); cx.stroke();
+  cx.fillStyle="#a98c5c"; cx.fillRect(-4,13,9,5); cx.restore();
+  cx.strokeStyle=CAMO[0]; cx.lineWidth=7;
+  cx.save(); cx.translate(11,-3); cx.rotate((-80+k2)*Math.PI/180); cx.beginPath(); cx.moveTo(0,0); cx.lineTo(0,15); cx.stroke();
+  cx.fillStyle="#a98c5c"; cx.fillRect(-4,13,9,5); cx.restore();
+
+  // тело лёжа
+  camoRect(-16,-13,28,12);
+  cx.fillStyle="#b71c1c"; cx.fillRect(-6,-13,5,2);
+  // раскинутая рука
+  cx.strokeStyle=CAMO[0]; cx.lineWidth=5;
+  cx.beginPath(); cx.moveTo(-10,-7); cx.lineTo(-20,-2); cx.stroke();
+  cx.fillStyle="#1e88e5"; cx.beginPath(); cx.arc(-20,-2,3.2,0,Math.PI*2); cx.fill();
+
+  // голова (лицо вверх)
+  cx.fillStyle="#4a3526"; cx.beginPath(); cx.arc(-22,-8,9,0,Math.PI*2); cx.fill();
+  cx.fillStyle="#a9c98f"; cx.beginPath(); cx.arc(-22,-6,8,0,Math.PI*2); cx.fill();
+  // крестики-глаза
+  cx.strokeStyle="#2c1a0e"; cx.lineWidth=1.4;
+  cx.beginPath();
+  cx.moveTo(-26,-9); cx.lineTo(-23,-6); cx.moveTo(-23,-9); cx.lineTo(-26,-6);
+  cx.moveTo(-20,-9); cx.lineTo(-17,-6); cx.moveTo(-17,-9); cx.lineTo(-20,-6); cx.stroke();
+  // открытый рот
+  cx.fillStyle="#5d3a1a"; cx.beginPath(); cx.arc(-22,-1,2.4,0,Math.PI*2); cx.fill();
+  // пена изо рта
+  cx.fillStyle="rgba(255,255,255,0.92)";
+  for (let i=0;i<8;i++){
+    const a=fr*0.06+i*1.1;
+    const fxp=-24-(i%3)*3+Math.sin(a)*1.4, fyp=1+(i*1.5)+Math.cos(a)*1.4;
+    cx.beginPath(); cx.arc(fxp,fyp,1.5+(i%2)*0.9,0,Math.PI*2); cx.fill();
+  }
+  cx.restore();
+}
+
+// ─── DRAW: СЦЕНА ОТРАВЛЕНИЯ ─────────────────────────────────
+function drawPoison() {
+  const bx = sx(player.x)+PW/2, by = player.y;
+  const leave = Math.max(0, pz-285);
+  const sgx = bx + poisonSide*(30 + leave*1.8);
+  const sgFacing = leave>0 ? poisonSide : -poisonSide;
+
+  let sgOpts;
+  if (pz < 50)     sgOpts = { frontArm:-1.05, bottle:true, smile:"" };
+  else if (pz<95)  sgOpts = { frontArm:-0.3, smile:"big" };
+  else if (pz<280) sgOpts = { frontArm:-0.25, smile:"big" };
+  else             sgOpts = { walk:true, smile:"big" };
+
+  drawSergey(sgx, GROUND, sgFacing, sgOpts);
+  drawBobaPoison(bx, by);
+
+  // реплика-баннер
+  let say;
+  if (pz<50)       say = "Серёжа: — Будешь стекломой? 🍾";
+  else if (pz<95)  say = "Боба пьёт залпом...";
+  else if (pz<130) say = "Боба хватается за горло!";
+  else if (pz<165) say = "Бу-э-э... 🤮";
+  else if (pz<280) say = "Пена изо рта, ноги трясутся... 💀";
+  else             say = "Серёжа довольно уходит. Ха-ха-ха!";
+  cx.fillStyle="rgba(0,0,0,0.6)"; cx.fillRect(0,30,W,22);
+  cx.fillStyle="#fff"; cx.font="bold 12px sans-serif"; cx.textAlign="center";
+  cx.fillText(say, W/2, 45);
+}
+
 // ─── DRAW: ПАЗЛ ─────────────────────────────────────────────
 function drawPuzzle() {
   // затемнение
@@ -678,8 +972,10 @@ function drawMenu() {
   cx.fillStyle = "#fff"; cx.font = "bold 16px monospace";
   cx.fillText("ЭЛЕКТРИК", W/2, 94);
   cx.fillStyle = "#b3e5fc"; cx.font = "11px sans-serif";
-  cx.fillText("Залезай на стремянки и меняй лампочки.", W/2, 120);
-  cx.fillText("Соедини провода по цвету, пока не ударило током!", W/2, 136);
+  cx.fillText("7 стремянок: меняй лампы, соединяя провода по цвету.", W/2, 118);
+  cx.fillText("Не зевай у патч-панели — иначе ударит током!", W/2, 132);
+  cx.fillStyle = "#ffab91";
+  cx.fillText("⚠ Монтажник Серёжа споит стекломоем — обходи со спины!", W/2, 148);
 
   // превью Бобы (камуфляж + синие перчатки + ёжик)
   cx.save(); cx.translate(W/2, 196); cx.scale(1.4,1.4);
@@ -732,9 +1028,20 @@ function drawWorld() {
     cx.fillText(allDone?"открыто":"замени лампы", gx, GROUND-40);
   }
 
-  // Боба
+  // Серёжи (патрулируют) — кроме сцены отравления, где врага рисует drawPoison
+  if (gstate !== "poison") {
+    for (const s of SERGEYS) {
+      const sgx = sx(s.x);
+      if (sgx < -40 || sgx > W+40) continue;
+      drawSergey(sgx, GROUND, s.facing || 1, { walk:true });
+    }
+  }
+
+  // Боба / сцена
   const px = sx(player.x) + PW/2, py = player.y;
-  if (gstate === "climb" || gstate === "puzzle" || gstate === "descend") {
+  if (gstate === "poison") {
+    drawPoison();
+  } else if (gstate === "climb" || gstate === "puzzle" || gstate === "descend") {
     drawBoba(px, py, { armUp:true });
   } else if (gstate === "shock") {
     drawBoba(px, py, { dangle:true });
@@ -757,7 +1064,7 @@ function loop() {
   drawHUD();
 
   if (gstate === "puzzle") drawPuzzle();
-  if (gstate === "dead") drawOverlay("⚡ КОРОТКОЕ ЗАМЫКАНИЕ", "Бобу выбило... Ламп заменено: "+LADDERS.filter(l=>l.done).length, "🔁 ЗАНОВО", "#c62828");
+  if (gstate === "dead") drawOverlay(deathTitle, (deathSub?deathSub+" ":"")+"Ламп: "+LADDERS.filter(l=>l.done).length+"/"+LADDERS.length, "🔁 ЗАНОВО", "#c62828");
   if (gstate === "win")  drawOverlay("💡 ВСЕ ЛАМПЫ ГОРЯТ!", "Отличная работа, Боба! Счёт: "+score, "▶ ЕЩЁ РАЗ", "#2e7d32");
 }
 
