@@ -647,18 +647,23 @@ function rulerStrap(x1, y1, x2, y2) {
 
 // пакет OZON, из которого Серёжа достаёт стекломой
 function drawOzonBag(x, y) {
-  cx.save(); cx.translate(x,y);
-  // ручки
-  cx.strokeStyle = "#0a3fd0"; cx.lineWidth = 1.4;
-  cx.beginPath(); cx.arc(-3.5,-10,3,Math.PI,0); cx.stroke();
-  cx.beginPath(); cx.arc(3.5,-10,3,Math.PI,0); cx.stroke();
+  cx.save();
+  cx.translate(x, y);
+  // ручки-вырезы
+  cx.strokeStyle = "#0a3fd0"; cx.lineWidth = 1.6; cx.lineCap = "round";
+  cx.beginPath(); cx.arc(-4,-11,3,Math.PI,0); cx.stroke();
+  cx.beginPath(); cx.arc(4,-11,3,Math.PI,0); cx.stroke();
   // тело пакета
-  cx.fillStyle = "#005bff"; rr(-9,-10,18,20,2); cx.fill();
-  cx.fillStyle = "#0a4fe0"; cx.fillRect(-9,-10,18,3);
-  // надпись ozon + фирменный «хвостик»
-  cx.fillStyle = "#fff"; cx.font = "bold 6px Arial"; cx.textAlign = "center";
-  cx.fillText("ozon", 0, 2);
-  cx.fillStyle = "#f1117e"; cx.beginPath(); cx.arc(8,1.5,1.4,0,Math.PI*2); cx.fill();
+  cx.fillStyle = "#005bff"; rr(-10,-11,20,21,2); cx.fill();
+  cx.fillStyle = "#1f6dff"; cx.fillRect(-10,-11,20,3);      // блик сверху
+  cx.fillStyle = "rgba(0,0,0,0.12)"; cx.fillRect(-10,7,20,3); // тень снизу
+  // белый логотип OZON
+  cx.fillStyle = "#fff"; cx.font = "bold 7px Arial"; cx.textAlign = "center"; cx.textBaseline = "middle";
+  cx.fillText("OZON", -1, -1);
+  // фирменная точка-«хвостик»
+  cx.fillStyle = "#f1117e"; cx.beginPath(); cx.arc(8.5,-3.5,1.4,0,Math.PI*2); cx.fill();
+  cx.textBaseline = "alphabetic";
+  cx.restore();
 }
 
 // ─── DRAW: СЕРЁЖА ───────────────────────────────────────────
