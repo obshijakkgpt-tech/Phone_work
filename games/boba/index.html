@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Боба — Электрик</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { margin:0; overflow:hidden; background:#000; touch-action:none; user-select:none; }
+canvas { position:fixed; top:0; left:0; display:block; }
+</style>
+</head>
+<body>
+<canvas id="g"></canvas>
+<script>
+(function () {
+"use strict";
+
+// ─── CANVAS ─────────────────────────────────────────────────
+const cv = document.getElementById("g");
+const cx = cv.getContext("2d");
+const W = 480, H = 300;
+
+function resize() {
+  cv.width  = window.innerWidth;
+  cv.height = window.innerHeight;
+}
+window.addEventListener("resize", resize);
+resize();
+
+// перевод координат экрана → дизайн-координаты 480×300
+function canvasXY(clientX, clientY) {
+  return { x: clientX * W / cv.width, y: clientY * H / cv.height };
+}
+
+// ─── CONSTANTS ──────────────────────────────────────────────
+const GR = 0.5, SPD = 3.2, PW = 20, PH = 42, GROUND = 258, WORLD = 2700;
+
+// ─── LADDERS / LAMPS ────────────────────────────────────────
+// у каждой стремянки своя лампа сверху и пазл (кол-во проводов)
+const LADDERS_INIT = [
+  { x:380,  wires:3, done:false },
+  { x:920,  wires:3, done:false },
+  { x:1500, wires:4, done:false },
+  { x:2120, wires:4, done:false },
+];
+let LADDERS = [];
+
+const GOAL_X = 2600;
+
+// цвета проводов
+const WCOL = ["#e53935", "#1e88e5", "#43a047", "#fdd835", "#8e24aa"];
+const WCOL_DK = ["#b71c1c", "#0d47a1", "#1b5e20", "#f9a825", "#4a148c"];
+
+// ─── STATE ──────────────────────────────────────────────────
+let player, cam, lives, score, fr, gstate, curLad, anim, puzzle, shock, hintAlpha;
+
+function initGame() {
+  player = { x:60, y:GROUND-PH, vx:0, onGround:true, facing:1, wf:0 };
+  cam    = { x:0 };
+  lives  = 3;
+  score  = 0;
+  fr     = 0;
+  curLad = -1;
+  anim   = 0;
+  puzzle = null;
+  shock  = 0;
+  hintAlpha = 3 * 60;
+  LADDERS = LADDERS_INIT.map(l => Object.assign({}, l, { done:false }));
+  gstate = "walk";
+}
+
+// ─── ГЕСТУРЫ (весь экран) ───────────────────────────────────
+const activeTouches = new Map();
+const gesture = { left:false, right:false };
+
+function syncGesture() {
+  gesture.left = gesture.right = false;
+  for (const [, t] of activeTouches) {
+    if (!t.isSwipe && !t.handled) {
+      if (t.cx < W / 2) gesture.left = true;
+      else              gesture.right = true;
+    }
+  }
+}
+
+function tryClimb() {
+  if (gstate !== "walk") return false;
+  for (let i = 0; i < LADDERS.length; i++) {
+    const l = LADDERS[i];
+    if (l.done) continue;
+    if (Math.abs(player.x + PW/2 - l.x) < 34 && player.onGround) {
+      startClimb(i);
+      return true;
+    }
+  }
+  return false;
+}
+
+document.addEventListener("touchstart", e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    const p = canvasXY(t.clientX, t.clientY);
+    activeTouches.set(t.identifier, { sx:p.x, sy:p.y, cx:p.x, cy:p.y, t0:Date.now(), isSwipe:false, handled:false });
+  }
+  syncGesture();
+}, { passive:false });
+
+document.addEventListener("touchmove", e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    const p = canvasXY(t.clientX, t.clientY);
+    const at = activeTouches.get(t.identifier);
+    if (!at) continue;
+    at.cx = p.x; at.cy = p.y;
+    if ((at.sy - at.cy) > 26) at.isSwipe = true;
+  }
+  syncGesture();
+}, { passive:false });
+
+document.addEventListener("touchend", e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    const at = activeTouches.get(t.identifier);
+    if (!at) continue;
+    const swipeUp  = (at.sy - at.cy) > 26 && Math.abs(at.cx - at.sx) < 90;
+    const quickTap = Date.now() - at.t0 < 240 && Math.abs(at.cx - at.sx) < 18 && Math.abs(at.cy - at.sy) < 18;
+
+    if (gstate === "walk") {
+      if (swipeUp || quickTap) tryClimb();
+    } else if (gstate === "puzzle") {
+      if (quickTap || (!at.isSwipe && Math.abs(at.cx-at.sx)<24 && Math.abs(at.cy-at.sy)<24))
+        puzzleTap(at.cx, at.cy);
+    } else if (gstate === "menu" || gstate === "dead" || gstate === "win") {
+      handleMenuClick(at.cx, at.cy);
+    }
+    activeTouches.delete(t.identifier);
+  }
+  syncGesture();
+}, { passive:false });
+
+// мышь (десктоп)
+cv.addEventListener("click", e => {
+  const { x, y } = canvasXY(e.clientX, e.clientY);
+  if (gstate === "puzzle") puzzleTap(x, y);
+  else if (gstate === "menu" || gstate === "dead" || gstate === "win") handleMenuClick(x, y);
+  else if (gstate === "walk") tryClimb();
+});
+
+// клавиатура
+const keys = {};
+document.addEventListener("keydown", e => {
+  keys[e.key] = true;
+  if (gstate === "walk" && (e.key === " " || e.key === "ArrowUp" || e.key === "w")) tryClimb();
+});
+document.addEventListener("keyup", e => { keys[e.key] = false; });
+
+// ─── ЛЕСТНИЦА / ПОДЪЁМ ──────────────────────────────────────
+function startClimb(i) {
+  curLad = i;
+  gstate = "climb";
+  anim = 0;
+  player.vx = 0;
+  player.x = LADDERS[i].x - PW/2;
+}
+
+function startPuzzle() {
+  const l = LADDERS[curLad];
+  const n = l.wires;
+  // правый столбец — перемешанный порядок цветов
+  const order = [];
+  for (let i = 0; i < n; i++) order.push(i);
+  for (let i = n - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  puzzle = {
+    n, order,
+    selLeft: -1,
+    conn: new Array(n).fill(-1),   // conn[colorIdx] = правый ряд, к которому подключён
+    time: 13 * 60,
+    timeMax: 13 * 60,
+    wrongFlash: 0, wrongL: -1, wrongR: -1
+  };
+  gstate = "puzzle";
+}
+
+// геометрия пазла (в координатах 480×300)
+const PNL = { x:60, y:54, w:360, h:210 };
+function rowY(i, n) {
+  const top = PNL.y + 46, bot = PNL.y + PNL.h - 22;
+  return top + (bot - top) * (n === 1 ? 0.5 : i / (n - 1));
+}
+const LEFT_TX = PNL.x + 56, RIGHT_TX = PNL.x + PNL.w - 56, TR = 15;
+
+function puzzleTap(x, y) {
+  if (!puzzle) return;
+  const n = puzzle.n;
+  // левый столбец
+  for (let i = 0; i < n; i++) {
+    if (puzzle.conn[i] >= 0) continue;
+    if (Math.hypot(x - LEFT_TX, y - rowY(i, n)) < TR + 8) { puzzle.selLeft = i; return; }
+  }
+  // правый столбец
+  for (let j = 0; j < n; j++) {
+    const color = puzzle.order[j];
+    if (puzzle.conn[color] >= 0) continue;            // уже занят
+    if (Math.hypot(x - RIGHT_TX, y - rowY(j, n)) < TR + 8) {
+      if (puzzle.selLeft < 0) return;
+      if (puzzle.order[j] === puzzle.selLeft) {
+        // верное соединение
+        puzzle.conn[puzzle.selLeft] = j;
+        score += 25;
+        puzzle.selLeft = -1;
+        if (puzzle.conn.every(c => c >= 0)) puzzleWin();
+      } else {
+        // ошибка — штраф по времени, вспышка
+        puzzle.wrongFlash = 22; puzzle.wrongL = puzzle.selLeft; puzzle.wrongR = j;
+        puzzle.time = Math.max(0, puzzle.time - 90);
+        puzzle.selLeft = -1;
+      }
+      return;
+    }
+  }
+}
+
+function puzzleWin() {
+  LADDERS[curLad].done = true;
+  score += 200;
+  gstate = "descend";
+  anim = 0;
+  puzzle = null;
+}
+
+function puzzleFail() {
+  puzzle = null;
+  shock = 0;
+  gstate = "shock";
+}
+
+// ─── UPDATE ─────────────────────────────────────────────────
+function update() {
+  if (hintAlpha > 0) hintAlpha--;
+
+  if (gstate === "walk")    updateWalk();
+  else if (gstate === "climb")   updateClimb();
+  else if (gstate === "descend") updateDescend();
+  else if (gstate === "puzzle")  updatePuzzle();
+  else if (gstate === "shock")   updateShock();
+}
+
+function updateWalk() {
+  const goL = keys["ArrowLeft"]  || keys["a"] || gesture.left;
+  const goR = keys["ArrowRight"] || keys["d"] || gesture.right;
+  if (goL)      { player.vx = -SPD; player.facing = -1; }
+  else if (goR) { player.vx =  SPD; player.facing =  1; }
+  else          { player.vx *= 0.6; }
+
+  if (Math.abs(player.vx) > 0.5) player.wf += 0.2;
+
+  player.x += player.vx;
+  if (player.x < 0) player.x = 0;
+  if (player.x + PW > WORLD) player.x = WORLD - PW;
+  player.y = GROUND - PH;
+  player.onGround = true;
+
+  // финиш — только если все лампы заменены
+  if (player.x + PW/2 > GOAL_X && LADDERS.every(l => l.done)) {
+    gstate = "win"; score += 500;
+  }
+
+  cam.x += (player.x - 150 - cam.x) * 0.12;
+  cam.x = Math.max(0, Math.min(cam.x, WORLD - W));
+}
+
+function updateClimb() {
+  anim++;
+  const l = LADDERS[curLad];
+  const topY = GROUND - PH - 96;          // высота, на которой меняет лампу
+  player.y = (GROUND - PH) + (topY - (GROUND - PH)) * Math.min(1, anim / 40);
+  if (anim >= 40) startPuzzle();
+}
+
+function updateDescend() {
+  anim++;
+  const topY = GROUND - PH - 96;
+  player.y = topY + ((GROUND - PH) - topY) * Math.min(1, anim / 30);
+  if (anim >= 30) {
+    player.y = GROUND - PH;
+    // отойти от стремянки, чтобы не залезть снова сразу
+    player.x = LADDERS[curLad].x + 40;
+    curLad = -1;
+    gstate = "walk";
+  }
+}
+
+function updatePuzzle() {
+  if (puzzle.wrongFlash > 0) puzzle.wrongFlash--;
+  puzzle.time--;
+  if (puzzle.time <= 0) puzzleFail();
+}
+
+function updateShock() {
+  shock++;
+  if (shock === 1) lives--;
+  if (shock >= 110) {
+    if (lives <= 0) { gstate = "dead"; return; }
+    // слезает и можно повторить
+    player.y = GROUND - PH;
+    player.x = LADDERS[curLad].x + 40;
+    curLad = -1;
+    gstate = "walk";
+  }
+}
+
+// ─── HELPERS ────────────────────────────────────────────────
+function sx(wx) { return Math.round(wx - cam.x); }
+function rr(x, y, w, h, r) {
+  const m = Math.min(r, w/2, h/2);
+  cx.beginPath();
+  cx.moveTo(x+m, y); cx.lineTo(x+w-m, y); cx.arcTo(x+w,y, x+w,y+h, m);
+  cx.lineTo(x+w,y+h-m); cx.arcTo(x+w,y+h, x,y+h, m);
+  cx.lineTo(x+m,y+h); cx.arcTo(x,y+h, x,y, m);
+  cx.lineTo(x,y+m); cx.arcTo(x,y, x+w,y, m);
+  cx.closePath();
+}
+
+// ─── DRAW: МИР ──────────────────────────────────────────────
+function drawBG() {
+  // стена
+  const grd = cx.createLinearGradient(0,0,0,H);
+  grd.addColorStop(0,"#37474f"); grd.addColorStop(1,"#263238");
+  cx.fillStyle = grd; cx.fillRect(0,0,W,H);
+  // плитка на стене
+  const off = (cam.x*0.4)%56;
+  cx.strokeStyle = "rgba(255,255,255,0.04)"; cx.lineWidth = 1;
+  for (let i=-1;i<W/56+2;i++){ cx.beginPath(); cx.moveTo(i*56-off,0); cx.lineTo(i*56-off,GROUND); cx.stroke(); }
+  for (let j=0;j<GROUND;j+=42){ cx.beginPath(); cx.moveTo(0,j); cx.lineTo(W,j); cx.stroke(); }
+  // окна
+  cx.fillStyle = "rgba(120,160,200,0.10)";
+  const wo = (cam.x*0.25)%320;
+  for (let i=-1;i<3;i++){ rr(i*320-wo+40,40,120,90,6); cx.fill(); }
+  // пол
+  cx.fillStyle = "#5d4037"; cx.fillRect(0,GROUND,W,H-GROUND);
+  cx.fillStyle = "#4e342e"; cx.fillRect(0,GROUND,W,4);
+  const fo = (cam.x*0.7)%48;
+  cx.strokeStyle = "rgba(0,0,0,0.18)"; cx.lineWidth = 1;
+  for (let i=-1;i<W/48+2;i++){ cx.beginPath(); cx.moveTo(i*48-fo,GROUND+4); cx.lineTo(i*48-fo,H); cx.stroke(); }
+}
+
+function drawLamp(wx, lit) {
+  const lx = sx(wx);
+  const cy = GROUND - PH - 96 - 26;     // лампа над головой
+  // провод к потолку
+  cx.strokeStyle = "#263238"; cx.lineWidth = 3;
+  cx.beginPath(); cx.moveTo(lx, 0); cx.lineTo(lx, cy-12); cx.stroke();
+  // патрон
+  cx.fillStyle = "#9e9e9e"; cx.fillRect(lx-6, cy-14, 12, 10);
+  // свет
+  if (lit) {
+    const g = cx.createRadialGradient(lx,cy,4,lx,cy,80);
+    g.addColorStop(0,"rgba(255,245,160,0.55)"); g.addColorStop(1,"rgba(255,245,160,0)");
+    cx.fillStyle = g; cx.beginPath(); cx.arc(lx,cy,80,0,Math.PI*2); cx.fill();
+  }
+  // колба
+  cx.fillStyle = lit ? "#fff59d" : "#90a4ae";
+  cx.beginPath(); cx.arc(lx, cy, 11, 0, Math.PI*2); cx.fill();
+  cx.fillStyle = lit ? "#fff176" : "#78909c";
+  cx.fillRect(lx-5, cy+8, 10, 5);
+  if (lit) {
+    cx.strokeStyle = "#f9a825"; cx.lineWidth = 1.2;
+    cx.beginPath(); cx.moveTo(lx-3,cy+2); cx.lineTo(lx,cy-2); cx.lineTo(lx+3,cy+2); cx.stroke();
+  }
+}
+
+function drawLadder(wx, done) {
+  const lx = sx(wx);
+  if (lx < -60 || lx > W+60) return;
+  const topY = GROUND - 100, botY = GROUND;
+  // A-образная стремянка
+  cx.strokeStyle = "#e0843a"; cx.lineWidth = 5; cx.lineCap = "round";
+  // передние стойки
+  cx.beginPath(); cx.moveTo(lx-16, botY); cx.lineTo(lx-6, topY); cx.stroke();
+  cx.beginPath(); cx.moveTo(lx+16, botY); cx.lineTo(lx+6, topY); cx.stroke();
+  // задние стойки (светлее)
+  cx.strokeStyle = "#b5651d"; cx.lineWidth = 4;
+  cx.beginPath(); cx.moveTo(lx-6, botY); cx.lineTo(lx, topY-2); cx.stroke();
+  cx.beginPath(); cx.moveTo(lx+24, botY); cx.lineTo(lx+8, topY-2); cx.stroke();
+  // ступени
+  cx.strokeStyle = "#c9742e"; cx.lineWidth = 4;
+  for (let s = 0; s < 4; s++) {
+    const yy = botY - 18 - s*22;
+    const t = (yy - botY) / (topY - botY);
+    const lxx = lx - 16 + (10)*t, rxx = lx + 16 - (10)*t;
+    cx.beginPath(); cx.moveTo(lxx, yy); cx.lineTo(rxx, yy); cx.stroke();
+  }
+  // верхняя площадка
+  cx.fillStyle = "#a85a1a"; cx.fillRect(lx-10, topY-4, 20, 5);
+
+  // маркер «залезть»
+  if (!done) {
+    const near = Math.abs(player.x + PW/2 - wx) < 34;
+    if (near && gstate === "walk") {
+      const bob = Math.sin(fr*0.15)*3;
+      cx.fillStyle = "#ffeb3b";
+      cx.font = "bold 12px sans-serif"; cx.textAlign = "center";
+      cx.fillText("↑ залезть", lx, topY - 30 + bob);
+    }
+  } else {
+    // галочка готово
+    cx.fillStyle = "#69f0ae"; cx.font = "bold 14px sans-serif"; cx.textAlign = "center";
+    cx.fillText("✓", lx, topY - 14);
+  }
+}
+
+// ─── DRAW: БОБА ─────────────────────────────────────────────
+function drawBoba(px, py, opts) {
+  opts = opts || {};
+  const f = player.facing;
+  const armUp = opts.armUp;       // тянется к лампе
+  const dangle = opts.dangle;     // болтается (удар током)
+  const wf = (gstate === "walk" && player.onGround) ? player.wf : 0;
+  const ls = Math.sin(wf)*9, as = Math.sin(wf)*7;
+
+  cx.save();
+  cx.translate(px, py);
+  if (dangle) cx.rotate(Math.sin(fr*0.6)*0.18);
+  if (f < 0) cx.scale(-1,1);
+
+  // тень
+  if (gstate === "walk") {
+    cx.fillStyle = "rgba(0,0,0,0.14)";
+    cx.beginPath(); cx.ellipse(0, PH+2, 14, 5, 0, 0, Math.PI*2); cx.fill();
+  }
+
+  // пояс с инструментом
+  cx.fillStyle = "#3e2723";
+
+  // ноги
+  cx.lineCap = "butt";
+  for (const [ox, sgn] of [[-5,1],[5,-1]]) {
+    cx.save(); cx.translate(ox,30);
+    if (!dangle) cx.rotate(ls*sgn*Math.PI/180);
+    else cx.rotate(Math.sin(fr*0.5+sgn)*0.3);
+    cx.fillStyle = "#37474f"; cx.fillRect(-4,0,7,13);   // штаны
+    cx.fillStyle = "#212121"; cx.fillRect(-5,11,9,6);   // ботинок
+    cx.restore();
+  }
+
+  // тело — зелёная роба
+  cx.fillStyle = "#2e7d32"; cx.fillRect(-9,14,18,18);
+  cx.fillStyle = "#1b5e20"; cx.fillRect(-9,14,18,3);
+  // карман + застёжка
+  cx.fillStyle = "#1b5e20"; cx.fillRect(-7,22,6,6);
+  cx.strokeStyle = "#cddc39"; cx.lineWidth = 1.5;
+  cx.beginPath(); cx.moveTo(0,15); cx.lineTo(0,31); cx.stroke();
+  // светоотражающая полоса
+  cx.fillStyle = "#fdd835"; cx.fillRect(-9,18,18,2.5);
+
+  // руки
+  cx.lineCap = "round";
+  // задняя рука
+  cx.save(); cx.translate(-9,18); cx.rotate((-as-12)*Math.PI/180);
+  cx.strokeStyle = "#2e7d32"; cx.lineWidth = 5;
+  cx.beginPath(); cx.moveTo(0,0); cx.lineTo(0,13); cx.stroke();
+  cx.fillStyle = "#f5cba7"; cx.beginPath(); cx.arc(0,13,3,0,Math.PI*2); cx.fill();
+  cx.restore();
+  // передняя рука (поднята к лампе при замене)
+  cx.save(); cx.translate(9,18);
+  if (armUp) cx.rotate(-2.4 + Math.sin(fr*0.3)*0.12);
+  else if (dangle) cx.rotate(-2.6);          // держится за лампу
+  else cx.rotate((as+12)*Math.PI/180);
+  cx.strokeStyle = "#2e7d32"; cx.lineWidth = 5;
+  cx.beginPath(); cx.moveTo(0,0); cx.lineTo(0,13); cx.stroke();
+  cx.fillStyle = "#f5cba7"; cx.beginPath(); cx.arc(0,13,3,0,Math.PI*2); cx.fill();
+  cx.restore();
+
+  // голова
+  cx.fillStyle = "#f5cba7"; cx.beginPath(); cx.arc(0,8,9,0,Math.PI*2); cx.fill();
+  // глаза
+  cx.fillStyle = "#2c1a0e";
+  if (dangle) {
+    cx.font = "bold 7px sans-serif"; cx.fillText("X", 1.5,9.5); cx.fillText("X", -4.5,9.5);
+  } else {
+    cx.beginPath(); cx.arc(3,7,1.6,0,Math.PI*2); cx.arc(-3,7,1.6,0,Math.PI*2); cx.fill();
+  }
+  // рот
+  cx.strokeStyle = "#2c1a0e"; cx.lineWidth = 1.5;
+  if (dangle) { cx.beginPath(); cx.arc(0,13,2.2,Math.PI,Math.PI*2); cx.stroke(); }
+  else if (armUp) { cx.beginPath(); cx.arc(0,11,2,0,Math.PI*2); cx.stroke(); }
+  else { cx.beginPath(); cx.arc(0,10,2.5,0.1,Math.PI-0.1); cx.stroke(); }
+  // усы
+  cx.fillStyle = "#4e342e"; cx.fillRect(-4,11,8,1.6);
+
+  // каска (синяя — электрик)
+  cx.fillStyle = "#1565c0"; cx.beginPath(); cx.arc(0,3,11,Math.PI,0); cx.fill();
+  cx.fillRect(-13,2,26,4);
+  cx.fillStyle = "#0d47a1"; cx.fillRect(-11,0,22,3);
+
+  cx.restore();
+}
+
+// ─── DRAW: УДАР ТОКОМ ───────────────────────────────────────
+function drawShock(px, py) {
+  // молнии вокруг
+  cx.strokeStyle = (fr%4<2) ? "#fff176" : "#4fc3f7";
+  cx.lineWidth = 2;
+  for (let i = 0; i < 6; i++) {
+    const a = (i/6)*Math.PI*2 + fr*0.4;
+    const r1 = 16, r2 = 28 + Math.sin(fr*0.5+i)*6;
+    cx.beginPath();
+    cx.moveTo(px+Math.cos(a)*r1, py+PH/2+Math.sin(a)*r1);
+    const ma = a+0.2;
+    cx.lineTo(px+Math.cos(ma)*r1*1.5, py+PH/2+Math.sin(ma)*r1*1.5);
+    cx.lineTo(px+Math.cos(a)*r2, py+PH/2+Math.sin(a)*r2);
+    cx.stroke();
+  }
+  if (fr%6<3) {
+    cx.fillStyle = "rgba(255,255,180,0.18)";
+    cx.fillRect(0,0,W,H);
+  }
+}
+
+// ─── DRAW: ПАЗЛ ─────────────────────────────────────────────
+function drawPuzzle() {
+  // затемнение
+  cx.fillStyle = "rgba(0,0,0,0.78)"; cx.fillRect(0,0,W,H);
+  // панель
+  cx.fillStyle = "#eceff1"; rr(PNL.x,PNL.y,PNL.w,PNL.h,12); cx.fill();
+  cx.strokeStyle = "#90a4ae"; cx.lineWidth = 3; rr(PNL.x,PNL.y,PNL.w,PNL.h,12); cx.stroke();
+  // винтики по углам
+  cx.fillStyle = "#b0bec5";
+  for (const [ox,oy] of [[10,10],[PNL.w-10,10],[10,PNL.h-10],[PNL.w-10,PNL.h-10]]) {
+    cx.beginPath(); cx.arc(PNL.x+ox,PNL.y+oy,3,0,Math.PI*2); cx.fill();
+  }
+
+  // заголовок
+  cx.fillStyle = "#37474f"; cx.font = "bold 13px sans-serif"; cx.textAlign = "center";
+  cx.fillText("СОЕДИНИ ПРОВОДА ПО ЦВЕТУ", W/2, PNL.y+24);
+
+  const n = puzzle.n;
+
+  // таймер
+  const tp = puzzle.time / puzzle.timeMax;
+  cx.fillStyle = "rgba(0,0,0,0.12)"; rr(PNL.x+30,PNL.y+30,PNL.w-60,7,3); cx.fill();
+  cx.fillStyle = tp>0.4 ? "#43a047" : (tp>0.18?"#fb8c00":"#e53935");
+  rr(PNL.x+30,PNL.y+30,(PNL.w-60)*tp,7,3); cx.fill();
+
+  // существующие соединения
+  for (let i = 0; i < n; i++) {
+    if (puzzle.conn[i] < 0) continue;
+    const y1 = rowY(i, n), y2 = rowY(puzzle.conn[i], n);
+    cx.strokeStyle = WCOL[i]; cx.lineWidth = 5; cx.lineCap = "round";
+    cx.beginPath();
+    cx.moveTo(LEFT_TX, y1);
+    cx.bezierCurveTo((LEFT_TX+RIGHT_TX)/2, y1, (LEFT_TX+RIGHT_TX)/2, y2, RIGHT_TX, y2);
+    cx.stroke();
+  }
+
+  // линия от выбранного левого к пальцу (визуальная подсказка)
+  if (puzzle.selLeft >= 0) {
+    const y1 = rowY(puzzle.selLeft, n);
+    cx.fillStyle = WCOL[puzzle.selLeft];
+    cx.font = "11px sans-serif"; cx.textAlign = "left";
+    cx.fillText("→ выбери пару справа", PNL.x+30, PNL.y+PNL.h-8);
+  }
+
+  // вспышка ошибки
+  if (puzzle.wrongFlash > 0 && fr%4<2) {
+    const y1 = rowY(puzzle.wrongL, n), y2 = rowY(puzzle.wrongR, n);
+    cx.strokeStyle = "#ff1744"; cx.lineWidth = 3;
+    cx.beginPath(); cx.moveTo(LEFT_TX,y1); cx.lineTo(RIGHT_TX,y2); cx.stroke();
+  }
+
+  // левые клеммы (фиксированный порядок цветов)
+  for (let i = 0; i < n; i++) {
+    const y = rowY(i, n), done = puzzle.conn[i] >= 0, sel = puzzle.selLeft === i;
+    drawTerminal(LEFT_TX, y, WCOL[i], WCOL_DK[i], done, sel, true);
+  }
+  // правые клеммы (перемешанный порядок)
+  for (let j = 0; j < n; j++) {
+    const color = puzzle.order[j], y = rowY(j, n), done = puzzle.conn[color] >= 0;
+    drawTerminal(RIGHT_TX, y, WCOL[color], WCOL_DK[color], done, false, false);
+  }
+}
+
+function drawTerminal(x, y, col, dk, done, sel, isLeft) {
+  // хвостик провода к краю панели
+  cx.strokeStyle = dk; cx.lineWidth = 5; cx.lineCap = "round";
+  cx.beginPath(); cx.moveTo(x, y);
+  cx.lineTo(isLeft ? PNL.x+8 : PNL.x+PNL.w-8, y); cx.stroke();
+  // клемма
+  if (sel) {
+    cx.strokeStyle = "#fff"; cx.lineWidth = 3;
+    cx.beginPath(); cx.arc(x,y,TR+5,0,Math.PI*2); cx.stroke();
+  }
+  cx.fillStyle = col; cx.beginPath(); cx.arc(x,y,TR,0,Math.PI*2); cx.fill();
+  cx.strokeStyle = dk; cx.lineWidth = 2.5; cx.beginPath(); cx.arc(x,y,TR,0,Math.PI*2); cx.stroke();
+  // блик
+  cx.fillStyle = "rgba(255,255,255,0.45)";
+  cx.beginPath(); cx.arc(x-4,y-4,4,0,Math.PI*2); cx.fill();
+  if (done) {
+    cx.fillStyle = "#fff"; cx.font = "bold 13px sans-serif"; cx.textAlign = "center";
+    cx.fillText("✓", x, y+4);
+  }
+}
+
+// ─── HUD ────────────────────────────────────────────────────
+function drawHUD() {
+  cx.fillStyle = "rgba(0,0,0,0.5)"; cx.fillRect(0,0,W,24);
+  cx.fillStyle = "#ffeb3b"; cx.font = "bold 12px monospace"; cx.textAlign = "left";
+  cx.fillText("💰 "+score, 8, 16);
+  cx.textAlign = "right";
+  cx.fillText("❤️".repeat(Math.max(0,lives)), W-8, 16);
+  // счётчик ламп
+  const done = LADDERS.filter(l=>l.done).length;
+  cx.fillStyle = "#fff"; cx.textAlign = "center"; cx.font = "bold 12px monospace";
+  cx.fillText("💡 "+done+"/"+LADDERS.length, W/2, 16);
+
+  if (hintAlpha > 0 && gstate === "walk") {
+    const a = Math.min(1, hintAlpha/60);
+    cx.save(); cx.globalAlpha = a;
+    cx.fillStyle = "rgba(0,0,0,0.55)"; cx.fillRect(0,H-22,W,22);
+    cx.fillStyle = "#fff"; cx.font = "10px sans-serif"; cx.textAlign = "center";
+    cx.fillText("◀ держи левую   |   у стремянки: ↑ свайп = залезть   |   держи правую ▶", W/2, H-7);
+    cx.restore();
+  }
+
+  // зоны управления
+  if (gstate === "walk") {
+    cx.save(); cx.globalAlpha = 0.05;
+    cx.fillStyle = gesture.left ? "#fff":"#aaa"; cx.fillRect(0,24,W/2,H-24);
+    cx.fillStyle = gesture.right? "#fff":"#aaa"; cx.fillRect(W/2,24,W/2,H-24);
+    cx.restore();
+  }
+}
+
+// ─── МЕНЮ / ОВЕРЛЕИ ─────────────────────────────────────────
+function drawOverlay(title, sub, btn, col) {
+  cx.fillStyle = "rgba(0,0,0,0.74)"; cx.fillRect(0,0,W,H);
+  cx.fillStyle = "#fff"; cx.font = "bold 26px sans-serif"; cx.textAlign = "center";
+  cx.fillText(title, W/2, H/2-40);
+  cx.font = "14px sans-serif"; cx.fillStyle = "#ddd";
+  cx.fillText(sub, W/2, H/2-8);
+  cx.fillStyle = col; rr(W/2-88, H/2+14, 176, 46, 23); cx.fill();
+  cx.fillStyle = "#fff"; cx.font = "bold 17px sans-serif";
+  cx.fillText(btn, W/2, H/2+43);
+}
+
+function drawMenu() {
+  const grd = cx.createLinearGradient(0,0,0,H);
+  grd.addColorStop(0,"#1a237e"); grd.addColorStop(1,"#0d47a1");
+  cx.fillStyle = grd; cx.fillRect(0,0,W,H);
+  // искры на фоне
+  for (let i=0;i<40;i++){
+    cx.fillStyle = `rgba(255,235,120,${0.2+Math.sin(fr*0.05+i)*0.15})`;
+    cx.fillRect((i*127)%W,(i*83)%H,2,2);
+  }
+  cx.fillStyle = "#fdd835"; cx.font = "bold 30px monospace"; cx.textAlign = "center";
+  cx.fillText("БОБА", W/2, 70);
+  cx.fillStyle = "#fff"; cx.font = "bold 16px monospace";
+  cx.fillText("ЭЛЕКТРИК", W/2, 94);
+  cx.fillStyle = "#b3e5fc"; cx.font = "11px sans-serif";
+  cx.fillText("Залезай на стремянки и меняй лампочки.", W/2, 120);
+  cx.fillText("Соедини провода по цвету, пока не ударило током!", W/2, 136);
+
+  // превью Бобы
+  cx.save(); cx.translate(W/2, 196); cx.scale(1.4,1.4);
+  cx.fillStyle = "#37474f"; cx.fillRect(-5,12,6,14); cx.fillRect(1,12,6,14);
+  cx.fillStyle = "#212121"; cx.fillRect(-6,23,8,5); cx.fillRect(1,23,8,5);
+  cx.fillStyle = "#2e7d32"; cx.fillRect(-9,-2,18,16);
+  cx.fillStyle = "#fdd835"; cx.fillRect(-9,2,18,2.5);
+  cx.strokeStyle = "#2e7d32"; cx.lineWidth = 5; cx.lineCap = "round";
+  cx.beginPath(); cx.moveTo(-9,2); cx.lineTo(-14,14); cx.stroke();
+  cx.beginPath(); cx.moveTo(9,2); cx.lineTo(14,14); cx.stroke();
+  cx.fillStyle = "#f5cba7"; cx.beginPath(); cx.arc(0,-10,9,0,Math.PI*2); cx.fill();
+  cx.fillStyle = "#1565c0"; cx.beginPath(); cx.arc(0,-13,11,Math.PI,0); cx.fill(); cx.fillRect(-13,-14,26,4);
+  cx.fillStyle = "#2c1a0e"; cx.beginPath(); cx.arc(3,-11,1.5,0,Math.PI*2); cx.arc(-3,-11,1.5,0,Math.PI*2); cx.fill();
+  cx.fillStyle = "#4e342e"; cx.fillRect(-4,-6,8,1.6);
+  cx.strokeStyle = "#2c1a0e"; cx.lineWidth = 1.5; cx.beginPath(); cx.arc(0,-7,2.2,0.1,Math.PI-0.1); cx.stroke();
+  cx.restore();
+
+  cx.fillStyle = "#43a047"; rr(W/2-96,224,192,46,23); cx.fill();
+  cx.fillStyle = "#fff"; cx.font = "bold 20px sans-serif"; cx.textAlign = "center";
+  cx.fillText("▶  ИГРАТЬ", W/2, 253);
+  cx.fillStyle = "rgba(255,255,255,0.35)"; cx.font = "10px sans-serif";
+  cx.fillText("Жесты: ◀ левая  |  ↑ свайп = залезть  |  правая ▶", W/2, 288);
+}
+
+function handleMenuClick(x, y) {
+  if (gstate === "menu") {
+    if (x>W/2-96 && x<W/2+96 && y>224 && y<270) initGame();
+  } else if (gstate === "dead" || gstate === "win") {
+    if (x>W/2-88 && x<W/2+88 && y>H/2+14 && y<H/2+60) { initGame(); gstate = "walk"; }
+  }
+}
+
+// ─── DRAW ВСЕГО ─────────────────────────────────────────────
+function drawWorld() {
+  drawBG();
+  // лампы + стремянки
+  for (const l of LADDERS) { drawLamp(l.x, l.done); drawLadder(l.x, l.done); }
+  // финиш-табличка
+  const gx = sx(GOAL_X);
+  if (gx > -40 && gx < W+40) {
+    const allDone = LADDERS.every(l=>l.done);
+    cx.fillStyle = allDone ? "#43a047" : "#616161";
+    rr(gx-26,GROUND-70,52,30,5); cx.fill();
+    cx.fillStyle = "#fff"; cx.font = "bold 9px sans-serif"; cx.textAlign = "center";
+    cx.fillText("ВЫХОД", gx, GROUND-50);
+    cx.fillStyle = allDone ? "#c8e6c9" : "#9e9e9e"; cx.font = "8px sans-serif";
+    cx.fillText(allDone?"открыто":"замени лампы", gx, GROUND-40);
+  }
+
+  // Боба
+  const px = sx(player.x) + PW/2, py = player.y;
+  if (gstate === "climb" || gstate === "puzzle" || gstate === "descend") {
+    drawBoba(px, py, { armUp:true });
+  } else if (gstate === "shock") {
+    drawBoba(px, py, { dangle:true });
+    drawShock(px, py);
+  } else {
+    drawBoba(px, py, {});
+  }
+}
+
+// ─── LOOP ───────────────────────────────────────────────────
+function loop() {
+  requestAnimationFrame(loop);
+  fr++;
+  cx.setTransform(cv.width/W, 0, 0, cv.height/H, 0, 0);
+
+  if (gstate === "menu") { drawMenu(); return; }
+
+  update();
+  drawWorld();
+  drawHUD();
+
+  if (gstate === "puzzle") drawPuzzle();
+  if (gstate === "dead") drawOverlay("⚡ КОРОТКОЕ ЗАМЫКАНИЕ", "Бобу выбило... Ламп заменено: "+LADDERS.filter(l=>l.done).length, "🔁 ЗАНОВО", "#c62828");
+  if (gstate === "win")  drawOverlay("💡 ВСЕ ЛАМПЫ ГОРЯТ!", "Отличная работа, Боба! Счёт: "+score, "▶ ЕЩЁ РАЗ", "#2e7d32");
+}
+
+initGame();
+gstate = "menu";
+loop();
+})();
+</script>
+</body>
+</html>
