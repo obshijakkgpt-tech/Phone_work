@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Алексей и Зарплата — Раннер</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { margin:0; overflow:hidden; background:#000; touch-action:none; user-select:none; }
+canvas { position:fixed; top:0; left:0; display:block; }
+</style>
+</head>
+<body>
+<canvas id="g"></canvas>
+<script>
+(function () {
+"use strict";
+
+// ─── CANVAS ─────────────────────────────────────────────────
+const cv = document.getElementById("g");
+const cx = cv.getContext("2d");
+const W = 480, H = 270;
+function resize(){ cv.width = window.innerWidth; cv.height = window.innerHeight; }
+window.addEventListener("resize", resize); resize();
+function canvasXY(clientX, clientY){ return { x: clientX*W/cv.width, y: clientY*H/cv.height }; }
+
+// ─── CONSTANTS ──────────────────────────────────────────────
+const GR = 0.62, JUMP = -10.6, GROUND = 220, PW = 22, PH = 44, PX = 120;
+const GOAL_DIST = 650;            // метров до бухгалтера
+const TOOLS = ["screwdriver","cutters","pliers","multimeter"];
+
+// ─── STATE ──────────────────────────────────────────────────
+let player, gstate, fr, dist, score, spd, gap, gapMax;
+let obstacles, enemies, tools, papers, schrei, boss;
+let obTimer, enTimer, throwCd, toolIdx, hintA, shakeT;
+
+function reset(){
+  player = { y:GROUND-PH, vy:0, onGround:true, jumps:2, run:0, hurt:0, throwT:0 };
+  fr = 0; dist = 0; score = 0; spd = 3.4; gapMax = 150; gap = gapMax;
+  obstacles = []; enemies = []; tools = []; papers = [];
+  schrei = { x: PX - gapMax };
+  boss = null;
+  obTimer = 70; enTimer = 110; throwCd = 0; toolIdx = 0;
+  hintA = 3*60; shakeT = 0;
+  gstate = "run";
+}
+
+// ─── ВВОД ───────────────────────────────────────────────────
+function doJump(){
+  if (player.jumps <= 0) return;
+  player.vy = (player.jumps === 2) ? JUMP : JUMP*0.86;
+  player.jumps--; player.onGround = false;
+}
+function doThrow(){
+  if (throwCd > 0) return;
+  throwCd = 16;
+  player.throwT = 10;
+  const type = TOOLS[toolIdx % TOOLS.length]; toolIdx++;
+  tools.push({ x: PX+14, y: player.y+22, vx: 6.4, spin: (Math.random()-0.5)*0.3, ang:0, type, dead:false });
+}
+
+const touches = new Map();
+document.addEventListener("touchstart", e => {
+  e.preventDefault();
+  for (const t of e.changedTouches){
+    const p = canvasXY(t.clientX, t.clientY);
+    touches.set(t.identifier, { sx:p.x, sy:p.y, cx:p.x, cy:p.y, t0:Date.now(), sw:false });
+  }
+}, {passive:false});
+document.addEventListener("touchmove", e => {
+  e.preventDefault();
+  for (const t of e.changedTouches){
+    const p = canvasXY(t.clientX, t.clientY); const at = touches.get(t.identifier);
+    if (!at) continue; at.cx=p.x; at.cy=p.y; if (at.sy-at.cy > 26) at.sw = true;
+  }
+}, {passive:false});
+document.addEventListener("touchend", e => {
+  e.preventDefault();
+  for (const t of e.changedTouches){
+    const at = touches.get(t.identifier); if (!at) continue;
+    const sw = at.sw, tap = Date.now()-at.t0 < 260 && Math.abs(at.cx-at.sx)<22 && Math.abs(at.cy-at.sy)<22;
+    if (gstate === "run" || gstate === "boss"){
+      if (sw) doJump();
+      else if (tap){ if (at.cx < W/2) doJump(); else doThrow(); }
+    } else if (gstate==="menu" || gstate==="dead" || gstate==="win"){
+      if (hitBtn(at.cx, at.cy)) reset();
+    }
+    touches.delete(t.identifier);
+  }
+}, {passive:false});
+cv.addEventListener("click", e => {
+  const {x,y} = canvasXY(e.clientX, e.clientY);
+  if (gstate==="menu"||gstate==="dead"||gstate==="win"){ if (hitBtn(x,y)) reset(); }
+  else if (gstate==="run"||gstate==="boss"){ if (x<W/2) doJump(); else doThrow(); }
+});
+const keys = {};
+document.addEventListener("keydown", e => {
+  if ((gstate==="run"||gstate==="boss")){
+    if (e.key===" "||e.key==="ArrowUp"||e.key==="w") doJump();
+    if (e.key==="x"||e.key==="Enter"||e.key==="Control") doThrow();
+  } else if (e.key===" "||e.key==="Enter"){ if(gstate!=="run"&&gstate!=="boss") reset(); }
+});
+
+function hitBtn(x,y){ return x>W/2-90 && x<W/2+90 && y>H/2+18 && y<H/2+64; }
+
+// ─── ФИЗИКА / ЛОГИКА ────────────────────────────────────────
+function rectHit(ax,ay,aw,ah,bx,by,bw,bh){ return ax<bx+bw && ax+aw>bx && ay<by+bh && ay+ah>by; }
+
+function stumble(amount){
+  if (player.hurt > 0) return;
+  player.hurt = 42; gap -= amount; shakeT = 12;
+  if (gap <= 8){ gap = 0; gstate = "dead"; }
+}
+
+function update(){
+  if (hintA>0) hintA--;
+  if (shakeT>0) shakeT--;
+  if (throwCd>0) throwCd--;
+  if (player.throwT>0) player.throwT--;
+  if (player.hurt>0) player.hurt--;
+
+  // вертикаль
+  player.vy = Math.min(player.vy+GR, 15);
+  player.y += player.vy;
+  if (player.y >= GROUND-PH){ player.y = GROUND-PH; player.vy = 0; player.onGround = true; player.jumps = 2; }
+  else player.onGround = false;
+  if (player.onGround) player.run += 0.28;
+
+  // снаряды-инструменты летят вправо
+  for (const t of tools){ t.x += t.vx; t.ang += t.spin; if (t.x > W+30) t.dead = true; }
+
+  if (gstate === "run") updateRun();
+  else if (gstate === "boss") updateBoss();
+
+  tools = tools.filter(t => !t.dead);
+}
+
+function updateRun(){
+  // ускоряемся с дистанцией
+  spd = 3.4 + Math.min(2.4, dist/300);
+  dist += spd*0.10;
+
+  // Шрайбикус потихоньку догоняет, медленно отстаёт сам по себе
+  gap += 0.18;                 // отрыв немного восстанавливается
+  gap = Math.min(gap, gapMax);
+  schrei.x = PX - gap;
+
+  // спавн препятствий
+  if (--obTimer <= 0){
+    obTimer = 60 + Math.floor(Math.random()*70);
+    const kind = Math.random()<0.5 ? "bucket" : (Math.random()<0.5?"bricks":"plank");
+    obstacles.push({ x: W+24, kind, hit:false });
+  }
+  // спавн прорабов
+  if (--enTimer <= 0){
+    enTimer = 90 + Math.floor(Math.random()*90);
+    enemies.push({ x: W+30, down:0, dead:false });
+  }
+
+  // двигаем мир
+  for (const o of obstacles) o.x -= spd;
+  for (const e of enemies) e.x -= spd + 0.4;
+  obstacles = obstacles.filter(o => o.x > -40);
+  enemies = enemies.filter(e => !e.dead && e.x > -40);
+
+  // попадание инструментом по прорабу
+  for (const t of tools){
+    for (const e of enemies){
+      if (e.down) continue;
+      if (rectHit(t.x-8,t.y-6,16,12, e.x-12,GROUND-40,24,40)){
+        e.down = 1; t.dead = true; score += 100; gap = Math.min(gapMax, gap+10);
+      }
+    }
+  }
+  for (const e of enemies){ if (e.down){ e.down++; if (e.down>34) e.dead = true; } }
+
+  // столкновения с игроком
+  const pY = player.y;
+  for (const o of obstacles){
+    if (o.hit) continue;
+    const oh = o.kind==="plank"?10:(o.kind==="bricks"?16:24);
+    if (rectHit(PX, pY, PW, PH, o.x-14, GROUND-oh, 28, oh)){
+      o.hit = true; stumble(30);
+    }
+  }
+  for (const e of enemies){
+    if (e.down) continue;
+    if (rectHit(PX, pY, PW, PH, e.x-12, GROUND-40, 24, 40)){
+      e.down = 1; stumble(34);
+    }
+  }
+
+  // выход на босса
+  if (dist >= GOAL_DIST){
+    gstate = "boss";
+    enemies = []; obstacles = [];
+    boss = { x: W+70, tx: W-96, hp: 8, hpMax: 8, throwT: 90, hitFlash:0, entered:false, defeat:0 };
+  }
+}
+
+function updateBoss(){
+  spd = Math.max(0, spd-0.12);
+  schrei.x = PX - gap;            // Шрайбикус замер сзади
+
+  if (!boss.entered){
+    boss.x += (boss.tx - boss.x)*0.06;
+    if (Math.abs(boss.x - boss.tx) < 2){ boss.x = boss.tx; boss.entered = true; }
+  }
+
+  if (boss.defeat>0){
+    boss.defeat++;
+    if (boss.defeat>90){ gstate = "win"; }
+    return;
+  }
+
+  if (boss.entered){
+    // босс кидает бумаги/счёты
+    if (--boss.throwT <= 0){
+      boss.throwT = 70 - Math.min(30, score/200);
+      papers.push({ x: boss.x-10, y: GROUND-46, vx: -4.4, vy: -3.6, spin:0.2, ang:0 });
+    }
+    if (boss.hitFlash>0) boss.hitFlash--;
+  }
+
+  // бумаги летят к игроку
+  for (const p of papers){ p.x += p.vx; p.y += p.vy; p.vy += 0.16; p.ang += p.spin; }
+  papers = papers.filter(p => p.x > -20 && p.y < GROUND+10);
+  for (const p of papers){
+    if (rectHit(PX,player.y,PW,PH, p.x-7,p.y-5,14,10)){ p.x=-999; stumble(26); }
+  }
+
+  // попадание инструментом по боссу
+  for (const t of tools){
+    if (rectHit(t.x-8,t.y-8,16,16, boss.x-26, GROUND-70, 52, 70)){
+      t.dead = true;
+      if (boss.entered && boss.defeat===0){
+        boss.hp--; boss.hitFlash = 8; score += 50; shakeT = 6;
+        if (boss.hp <= 0){ boss.defeat = 1; score += 1000; }
+      }
+    }
+  }
+}
+
+// ─── HELPERS ────────────────────────────────────────────────
+function rr(x,y,w,h,r){ const m=Math.min(r,w/2,h/2); cx.beginPath();
+  cx.moveTo(x+m,y); cx.lineTo(x+w-m,y); cx.arcTo(x+w,y,x+w,y+h,m);
+  cx.lineTo(x+w,y+h-m); cx.arcTo(x+w,y+h,x,y+h,m);
+  cx.lineTo(x+m,y+h); cx.arcTo(x,y+h,x,y,m);
+  cx.lineTo(x,y+m); cx.arcTo(x,y,x+w,y,m); cx.closePath(); }
+
+// ─── ФОН СТРОЙКИ ────────────────────────────────────────────
+function drawBG(){
+  const sky = cx.createLinearGradient(0,0,0,H);
+  sky.addColorStop(0,"#bcd3e6"); sky.addColorStop(1,"#e7eef3");
+  cx.fillStyle = sky; cx.fillRect(0,0,W,H);
+
+  // дальние недострои (параллакс)
+  const o1 = (dist*4) % 240;
+  cx.fillStyle = "#9fb0bd";
+  for (let i=-1;i<3;i++){ const bx = i*240 - o1;
+    cx.fillRect(bx+20,90,70,130); cx.fillRect(bx+110,60,60,160);
+    cx.fillStyle="#8fa0ad"; cx.fillRect(bx+110,60,60,8); cx.fillStyle="#9fb0bd";
+  }
+  // окна
+  cx.fillStyle = "rgba(255,255,255,0.25)";
+  for (let i=-1;i<3;i++){ const bx=i*240-o1;
+    for (let r=0;r<6;r++) for (let c=0;c<3;c++) cx.fillRect(bx+26+c*22,100+r*18,12,10);
+  }
+  // башенный кран
+  const o2 = (dist*6) % 520;
+  cx.strokeStyle = "#d4a23a"; cx.lineWidth = 4;
+  const kx = 360 - o2 + 0;
+  cx.beginPath(); cx.moveTo(kx,40); cx.lineTo(kx,210); cx.stroke();
+  cx.beginPath(); cx.moveTo(kx-60,52); cx.lineTo(kx+120,52); cx.stroke();
+  cx.beginPath(); cx.moveTo(kx,40); cx.lineTo(kx-58,52); cx.moveTo(kx,40); cx.lineTo(kx+30,52); cx.stroke();
+  cx.lineWidth=2; cx.beginPath(); cx.moveTo(kx+80,52); cx.lineTo(kx+80,86); cx.stroke();
+  cx.fillStyle="#d4a23a"; cx.fillRect(kx+72,86,16,12);
+
+  // забор
+  const o3 = (dist*10) % 60;
+  cx.fillStyle = "#3a7d44";
+  for (let i=-1;i<W/60+2;i++) cx.fillRect(i*60-o3, GROUND-34, 54, 34);
+  cx.fillStyle = "rgba(0,0,0,0.12)";
+  for (let i=-1;i<W/60+2;i++) cx.fillRect(i*60-o3+54, GROUND-34, 6, 34);
+
+  // земля
+  cx.fillStyle = "#8d7d63"; cx.fillRect(0,GROUND,W,H-GROUND);
+  cx.fillStyle = "#7a6c54"; cx.fillRect(0,GROUND,W,4);
+  const o4 = (dist*10) % 40;
+  cx.strokeStyle = "rgba(0,0,0,0.12)"; cx.lineWidth=1;
+  for (let i=-1;i<W/40+2;i++){ cx.beginPath(); cx.moveTo(i*40-o4,GROUND+6); cx.lineTo(i*40-o4-10,H); cx.stroke(); }
+}
+
+// ─── ИНСТРУМЕНТЫ (снаряды) ──────────────────────────────────
+function drawTool(type, x, y, ang){
+  cx.save(); cx.translate(x,y); cx.rotate(ang);
+  if (type === "screwdriver"){
+    cx.fillStyle="#e53935"; rr(-9,-3,9,6,2); cx.fill();           // ручка
+    cx.fillStyle="#b71c1c"; cx.fillRect(-9,-1,9,2);
+    cx.strokeStyle="#9e9e9e"; cx.lineWidth=2.4; cx.beginPath(); cx.moveTo(0,0); cx.lineTo(9,0); cx.stroke();
+    cx.fillStyle="#cfd8dc"; cx.fillRect(8,-1.4,3,2.8);
+  } else if (type === "cutters"){
+    cx.strokeStyle="#fb8c00"; cx.lineWidth=2.6; cx.lineCap="round";
+    cx.beginPath(); cx.moveTo(-9,-4); cx.lineTo(2,1); cx.moveTo(-9,4); cx.lineTo(2,-1); cx.stroke();
+    cx.fillStyle="#b0bec5"; cx.beginPath(); cx.moveTo(2,-3); cx.lineTo(9,-1); cx.lineTo(9,1); cx.lineTo(2,3); cx.closePath(); cx.fill();
+  } else if (type === "pliers"){
+    cx.strokeStyle="#1e88e5"; cx.lineWidth=2.6; cx.lineCap="round";
+    cx.beginPath(); cx.moveTo(-9,-4); cx.lineTo(1,0); cx.moveTo(-9,4); cx.lineTo(1,0); cx.stroke();
+    cx.strokeStyle="#90a4ae"; cx.lineWidth=2.2; cx.beginPath(); cx.moveTo(1,0); cx.lineTo(9,-3); cx.moveTo(1,0); cx.lineTo(9,3); cx.stroke();
+  } else { // multimeter
+    cx.fillStyle="#fdd835"; rr(-7,-7,14,14,2); cx.fill();
+    cx.fillStyle="#263238"; cx.fillRect(-5,-5,10,5);
+    cx.fillStyle="#7ee0a0"; cx.fillRect(-4,-4.4,8,3.6);
+    cx.fillStyle="#444"; cx.beginPath(); cx.arc(0,2.5,2.2,0,Math.PI*2); cx.fill();
+    cx.strokeStyle="#444"; cx.lineWidth=1; cx.beginPath(); cx.moveTo(0,2.5); cx.lineTo(1.4,1.2); cx.stroke();
+  }
+  cx.restore();
+}
+
+// ─── АЛЕКСЕЙ ────────────────────────────────────────────────
+function drawAlexey(){
+  const x = PX + PW/2, y = player.y;
+  const blink = player.hurt>0 && Math.floor(fr/4)%2===0;
+  const jumping = !player.onGround;
+  const rs = jumping ? 0 : Math.sin(player.run);
+  const ls = rs*15, as = rs*12;
+
+  cx.save(); cx.translate(x,y);
+  if (blink) cx.globalAlpha = 0.4;
+
+  // тень
+  if (player.onGround){ cx.globalAlpha *= 1; cx.fillStyle="rgba(0,0,0,0.16)";
+    cx.beginPath(); cx.ellipse(0,PH+2,15,5,0,0,Math.PI*2); cx.fill(); }
+
+  // дальняя нога
+  cx.save(); cx.translate(-3,30);
+  cx.rotate((jumping?20:ls)*Math.PI/180);
+  cx.fillStyle="#6b7178"; cx.fillRect(-4,0,7,13);          // штанина серая
+  cx.fillStyle="#2b2b2b"; cx.fillRect(-5,11,10,6);          // кроссовок
+  cx.fillStyle="#fff"; cx.fillRect(-5,16,10,1.4);
+  cx.restore();
+  // ближняя нога
+  cx.save(); cx.translate(4,30);
+  cx.rotate((jumping?-26:-ls)*Math.PI/180);
+  cx.fillStyle="#7a8087"; cx.fillRect(-4,0,7,13);
+  cx.fillStyle="#1f1f1f"; cx.fillRect(-5,11,10,6);
+  cx.fillStyle="#fff"; cx.fillRect(-5,16,10,1.4);
+  cx.restore();
+
+  // тело — серая куртка (двухтонная)
+  cx.fillStyle="#b9bcbe"; rr(-9,12,18,20,3); cx.fill();
+  cx.fillStyle="#6f767c"; cx.fillRect(-9,19,18,5);          // тёмная вставка
+  cx.fillStyle="#cfd2d4"; cx.fillRect(-9,12,18,3);
+  cx.strokeStyle="#8a9095"; cx.lineWidth=1; cx.beginPath(); cx.moveTo(0,12); cx.lineTo(0,32); cx.stroke();
+
+  // сумка-пояс с инструментами
+  cx.fillStyle="#2e2e2e"; rr(4,26,9,11,2); cx.fill();
+  cx.fillStyle="#e53935"; cx.fillRect(6,24,2,4);           // ручки отвёрток торчат
+  cx.fillStyle="#fb8c00"; cx.fillRect(9,24,2,4);
+  cx.fillStyle="#fdd835"; cx.fillRect(12,25,2,3);
+
+  // дальняя рука
+  cx.save(); cx.translate(-8,16); cx.rotate((jumping?-40:-as-20)*Math.PI/180);
+  cx.strokeStyle="#a9adb0"; cx.lineWidth=5; cx.lineCap="round";
+  cx.beginPath(); cx.moveTo(0,0); cx.lineTo(0,12); cx.stroke();
+  cx.fillStyle="#e8b48f"; cx.beginPath(); cx.arc(0,13,3,0,Math.PI*2); cx.fill();
+  cx.restore();
+  // ближняя рука (бросок)
+  cx.save(); cx.translate(8,16);
+  if (player.throwT>0) cx.rotate(-1.7);
+  else cx.rotate((jumping?40:as+20)*Math.PI/180);
+  cx.strokeStyle="#c2c5c7"; cx.lineWidth=5; cx.lineCap="round";
+  cx.beginPath(); cx.moveTo(0,0); cx.lineTo(0,12); cx.stroke();
+  cx.fillStyle="#e8b48f"; cx.beginPath(); cx.arc(0,13,3,0,Math.PI*2); cx.fill();
+  cx.restore();
+
+  // голова
+  cx.fillStyle="#e8b48f"; cx.beginPath(); cx.arc(0,7,8.5,0,Math.PI*2); cx.fill();
+  cx.fillStyle="#caa078"; cx.beginPath(); cx.arc(-7,8,2,0,Math.PI*2); cx.fill();  // ухо
+  cx.fillStyle="#2c1a0e"; cx.beginPath(); cx.arc(3,7,1.5,0,Math.PI*2); cx.fill(); // глаз
+  cx.strokeStyle="#2c1a0e"; cx.lineWidth=1.3;
+  cx.beginPath(); cx.arc(2,11,2,0,Math.PI); cx.stroke();   // сосредоточенный рот
+
+  // оранжевая каска
+  cx.fillStyle="#f4511e"; cx.beginPath(); cx.arc(0,2,10,Math.PI,0); cx.fill();
+  cx.fillRect(-12,1,24,4);
+  cx.fillStyle="#d84315"; cx.fillRect(-12,4,24,2);
+  cx.fillStyle="#ff7043"; cx.fillRect(-2,-7,4,9);          // гребень
+  cx.restore();
+}
+
+// ─── ШРАЙБИКУС (преследователь) ─────────────────────────────
+function drawSchrei(){
+  const x = schrei.x, y = GROUND-PH;
+  const rs = Math.sin(fr*0.4)*16;
+  cx.save(); cx.translate(x+PW/2, y);
+
+  cx.fillStyle="rgba(0,0,0,0.16)"; cx.beginPath(); cx.ellipse(0,PH+2,15,5,0,0,Math.PI*2); cx.fill();
+
+  // длинные ноги в брюках
+  cx.save(); cx.translate(-3,30); cx.rotate(rs*Math.PI/180);
+  cx.fillStyle="#5d4037"; cx.fillRect(-3,0,6,15); cx.fillStyle="#222"; cx.fillRect(-4,14,9,5); cx.restore();
+  cx.save(); cx.translate(3,30); cx.rotate(-rs*Math.PI/180);
+  cx.fillStyle="#6d4c41"; cx.fillRect(-3,0,6,15); cx.fillStyle="#222"; cx.fillRect(-4,14,9,5); cx.restore();
+
+  // плащ-пальто
+  cx.fillStyle="#3949ab"; rr(-9,12,18,21,3); cx.fill();
+  cx.fillStyle="#2c3a92"; cx.fillRect(-9,12,18,3);
+  // развевающаяся пола плаща
+  cx.beginPath(); cx.moveTo(-9,30); cx.lineTo(-15,33); cx.lineTo(-9,21); cx.closePath(); cx.fill();
+
+  // вытянутая рука тянется к Алексею
+  cx.save(); cx.translate(9,16); cx.rotate(-0.5 + Math.sin(fr*0.4)*0.2);
+  cx.strokeStyle="#3949ab"; cx.lineWidth=5; cx.lineCap="round";
+  cx.beginPath(); cx.moveTo(0,0); cx.lineTo(14,0); cx.stroke();
+  cx.fillStyle="#e8c4a0"; cx.beginPath(); cx.arc(14,0,3,0,Math.PI*2); cx.fill();
+  cx.restore();
+
+  // голова + большой нос
+  cx.fillStyle="#e8c4a0"; cx.beginPath(); cx.arc(0,7,8.5,0,Math.PI*2); cx.fill();
+  cx.fillStyle="#dca878"; cx.beginPath(); cx.ellipse(7,8,4,2.4,0,0,Math.PI*2); cx.fill(); // нос
+  // очки
+  cx.strokeStyle="#222"; cx.lineWidth=1.2;
+  cx.beginPath(); cx.arc(2,6,2.4,0,Math.PI*2); cx.arc(-4,6,2.4,0,Math.PI*2); cx.stroke();
+  cx.beginPath(); cx.moveTo(-1.6,6); cx.lineTo(-0.4,6); cx.stroke();
+  // шляпа-федора
+  cx.fillStyle="#37474f"; cx.beginPath(); cx.ellipse(0,0,11,3,0,0,Math.PI*2); cx.fill();
+  cx.fillStyle="#455a64"; rr(-6,-7,12,7,2); cx.fill();
+  cx.fillStyle="#263238"; cx.fillRect(-6,-2,12,2);
+
+  // фотоаппарат на шее
+  cx.fillStyle="#222"; rr(-6,20,12,7,1); cx.fill();
+  cx.fillStyle="#90a4ae"; cx.beginPath(); cx.arc(0,23.5,2.6,0,Math.PI*2); cx.fill();
+  cx.fillStyle="#cfd8dc"; cx.beginPath(); cx.arc(-0.6,22.9,1,0,Math.PI*2); cx.fill();
+  cx.restore();
+}
+
+// ─── ПРОРАБ (враг в белой каске) ────────────────────────────
+function drawForeman(e){
+  const x = e.x, fall = e.down>0;
+  cx.save(); cx.translate(x, GROUND);
+  if (fall){ cx.translate(0,4); cx.rotate(Math.min(1.4, e.down*0.06)); }
+  const rs = fall?0:Math.sin(fr*0.35+x)*12;
+
+  cx.fillStyle="rgba(0,0,0,0.16)"; cx.beginPath(); cx.ellipse(0,2,13,4,0,0,Math.PI*2); cx.fill();
+  // ноги
+  cx.save(); cx.translate(-4,-14); cx.rotate(rs*Math.PI/180); cx.fillStyle="#37474f"; cx.fillRect(-3,0,6,14); cx.fillStyle="#222"; cx.fillRect(-4,12,8,4); cx.restore();
+  cx.save(); cx.translate(4,-14); cx.rotate(-rs*Math.PI/180); cx.fillStyle="#37474f"; cx.fillRect(-3,0,6,14); cx.fillStyle="#222"; cx.fillRect(-4,12,8,4); cx.restore();
+  // тело + оранжевый жилет
+  cx.fillStyle="#5b6670"; rr(-9,-38,18,24,2); cx.fill();
+  cx.fillStyle="#ff7a00"; cx.fillRect(-9,-36,18,20);
+  cx.fillStyle="#e0e0e0"; cx.fillRect(-9,-30,18,3); cx.fillRect(-9,-22,18,3); // светополосы
+  cx.fillStyle="#ff7a00"; cx.fillRect(-3,-36,6,20);
+  // рука (грозит/держит планшет)
+  cx.strokeStyle="#5b6670"; cx.lineWidth=5; cx.lineCap="round";
+  cx.beginPath(); cx.moveTo(-8,-34); cx.lineTo(-13,-26); cx.stroke();
+  cx.fillStyle="#cfd8dc"; cx.fillRect(-17,-29,6,8);  // планшет-клипборд
+  cx.fillStyle="#fff"; cx.fillRect(-16,-28,4,6);
+  // голова
+  cx.fillStyle="#e8b48f"; cx.beginPath(); cx.arc(0,-44,8,0,Math.PI*2); cx.fill();
+  cx.fillStyle="#2c1a0e";
+  if (fall){ cx.font="bold 6px sans-serif"; cx.textAlign="center"; cx.fillText("x",2,-43); cx.fillText("x",-3,-43); }
+  else { cx.beginPath(); cx.arc(2.5,-45,1.4,0,Math.PI*2); cx.arc(-2.5,-45,1.4,0,Math.PI*2); cx.fill();
+    cx.strokeStyle="#7a3b1a"; cx.lineWidth=1.2; cx.beginPath(); cx.moveTo(-3,-40); cx.lineTo(3,-40); cx.stroke(); } // злой рот
+  cx.strokeStyle="#3a2a1a"; cx.lineWidth=1.1; cx.beginPath(); cx.moveTo(-5,-48); cx.lineTo(-1,-47); cx.moveTo(1,-47); cx.lineTo(5,-48); cx.stroke(); // брови
+  // белая каска
+  cx.fillStyle="#fafafa"; cx.beginPath(); cx.arc(0,-50,9,Math.PI,0); cx.fill();
+  cx.fillRect(-11,-51,22,4);
+  cx.fillStyle="#e0e0e0"; cx.fillRect(-2,-59,4,9);
+  cx.restore();
+}
+
+// ─── ПРЕПЯТСТВИЯ ────────────────────────────────────────────
+function drawObstacle(o){
+  cx.save(); cx.translate(o.x, GROUND);
+  if (o.kind==="bucket"){
+    cx.fillStyle="#ffb300"; cx.beginPath(); cx.moveTo(-9,-24); cx.lineTo(9,-24); cx.lineTo(7,0); cx.lineTo(-7,0); cx.closePath(); cx.fill();
+    cx.fillStyle="#ffa000"; cx.fillRect(-9,-24,18,3);
+    cx.strokeStyle="#8d6e00"; cx.lineWidth=1.4; cx.beginPath(); cx.arc(0,-24,8,Math.PI,0); cx.stroke();
+    cx.fillStyle="#cfd8dc"; cx.fillRect(-5,-22,10,5); // раствор
+  } else if (o.kind==="bricks"){
+    cx.fillStyle="#b5512d";
+    for (let r=0;r<2;r++) for (let c=0;c<3;c++) cx.fillRect(-15+c*10+(r%2?3:0),-16+r*8,9,7);
+    cx.strokeStyle="rgba(0,0,0,0.2)"; cx.lineWidth=1; cx.strokeRect(-16,-16,32,16);
+  } else { // plank
+    cx.fillStyle="#a9743b"; rr(-18,-10,36,7,2); cx.fill();
+    cx.fillStyle="#8a5a28"; cx.fillRect(-18,-10,36,2);
+    cx.fillStyle="#5d4037"; cx.fillRect(-10,-3,3,4); // гвоздь
+  }
+  cx.restore();
+}
+
+// ─── БУХГАЛТЕР (босс) ───────────────────────────────────────
+function drawBoss(){
+  const x = boss.x, flash = boss.hitFlash>0 && Math.floor(fr/2)%2===0;
+  cx.save(); cx.translate(x, GROUND);
+  const def = boss.defeat>0;
+  if (def){ cx.translate(0,Math.min(10,boss.defeat*0.3)); cx.rotate(Math.min(1.3,boss.defeat*0.03)); }
+
+  // стол с бумагами и счётами
+  cx.fillStyle="#6d4c41"; cx.fillRect(-34,-30,68,30);
+  cx.fillStyle="#5d4037"; cx.fillRect(-34,-30,68,5);
+  cx.fillStyle="#fff"; for(let i=0;i<3;i++) cx.fillRect(-30+i*8,-37,7,8); // стопки бумаг
+  // счёты
+  cx.fillStyle="#8d6e63"; cx.fillRect(18,-40,14,10);
+  cx.strokeStyle="#3e2723"; cx.lineWidth=0.8;
+  for(let r=0;r<3;r++){ cx.beginPath(); cx.moveTo(19,-38+r*3); cx.lineTo(31,-38+r*3); cx.stroke();
+    for(let b=0;b<4;b++){ cx.fillStyle=(b<2?"#d32f2f":"#fbc02d"); cx.beginPath(); cx.arc(20.5+b*2.6,-38+r*3,1,0,Math.PI*2); cx.fill(); } }
+
+  // тело за столом
+  cx.fillStyle= flash?"#ffcdd2":"#eceff1"; rr(-16,-58,32,30,3); cx.fill();   // рубашка
+  cx.fillStyle="#1565c0"; cx.beginPath(); cx.moveTo(-2,-58); cx.lineTo(2,-58); cx.lineTo(0,-44); cx.closePath(); cx.fill(); // галстук
+  cx.fillStyle="#37474f"; cx.fillRect(-16,-58,5,30); cx.fillRect(11,-58,5,30); // жилет
+  // руки
+  cx.strokeStyle= flash?"#ffcdd2":"#cfd8dc"; cx.lineWidth=6; cx.lineCap="round";
+  cx.beginPath(); cx.moveTo(-12,-52); cx.lineTo(-22,-40); cx.stroke();
+  cx.fillStyle="#e8b48f"; cx.beginPath(); cx.arc(-22,-40,3.2,0,Math.PI*2); cx.fill();
+  // голова
+  cx.fillStyle="#e8b48f"; cx.beginPath(); cx.arc(0,-66,9,0,Math.PI*2); cx.fill();
+  // зелёный козырёк бухгалтера
+  cx.fillStyle="#2e7d32"; cx.beginPath(); cx.ellipse(0,-70,11,4,0,0,Math.PI); cx.fill();
+  cx.fillRect(-11,-71,22,2);
+  // лысина по бокам волосы
+  cx.fillStyle="#6d4c41"; cx.beginPath(); cx.arc(-8,-66,2.2,0,Math.PI*2); cx.arc(8,-66,2.2,0,Math.PI*2); cx.fill();
+  // очки
+  cx.strokeStyle="#222"; cx.lineWidth=1.3;
+  cx.beginPath(); cx.arc(3,-65,2.6,0,Math.PI*2); cx.arc(-3,-65,2.6,0,Math.PI*2); cx.stroke();
+  cx.beginPath(); cx.moveTo(-0.4,-65); cx.lineTo(0.4,-65); cx.stroke();
+  cx.fillStyle="#222"; cx.beginPath(); cx.arc(3,-65,1,0,Math.PI*2); cx.arc(-3,-65,1,0,Math.PI*2); cx.fill();
+  // вредная ухмылка
+  cx.strokeStyle="#7a3b1a"; cx.lineWidth=1.3; cx.beginPath();
+  if (def) cx.arc(0,-58,3,Math.PI,Math.PI*2); else cx.arc(0,-60,3,0.1,Math.PI-0.1);
+  cx.stroke();
+  cx.restore();
+
+  // табличка
+  cx.fillStyle="#263238"; rr(x-30, GROUND-92, 60, 14, 3); cx.fill();
+  cx.fillStyle= def?"#69f0ae":"#ff5252"; cx.font="bold 8px sans-serif"; cx.textAlign="center";
+  cx.fillText(def?"ЗАРПЛАТА ВЫДАНА":"ЗАРПЛАТЫ НЕТ", x, GROUND-82);
+}
+
+// ─── HUD ────────────────────────────────────────────────────
+function drawHUD(){
+  cx.fillStyle="rgba(0,0,0,0.45)"; cx.fillRect(0,0,W,22);
+  cx.fillStyle="#fff"; cx.font="bold 11px monospace"; cx.textAlign="left";
+  cx.fillText("🏃 "+Math.floor(dist)+" м", 8, 15);
+  cx.textAlign="right"; cx.fillStyle="#ffeb3b";
+  cx.fillText("💰 "+score, W-8, 15);
+
+  // полоса отрыва от Шрайбикуса
+  cx.textAlign="center"; cx.fillStyle="#fff"; cx.font="9px sans-serif";
+  cx.fillText("отрыв", W/2-78, 15);
+  const gp = gap/gapMax;
+  cx.fillStyle="rgba(255,255,255,0.2)"; rr(W/2-55,7,150,9,4); cx.fill();
+  cx.fillStyle = gp>0.5?"#69f0ae":(gp>0.25?"#ffb300":"#ff5252"); rr(W/2-55,7,150*gp,9,4); cx.fill();
+
+  // босс HP
+  if (gstate==="boss" && boss && boss.entered && boss.defeat===0){
+    cx.fillStyle="#fff"; cx.font="bold 9px sans-serif"; cx.textAlign="center";
+    cx.fillText("БУХГАЛТЕР", W/2, 36);
+    cx.fillStyle="rgba(255,255,255,0.2)"; rr(W/2-60,40,120,8,3); cx.fill();
+    cx.fillStyle="#e53935"; rr(W/2-60,40,120*(boss.hp/boss.hpMax),8,3); cx.fill();
+  }
+
+  if (hintA>0 && gstate==="run"){
+    const a=Math.min(1,hintA/60); cx.save(); cx.globalAlpha=a;
+    cx.fillStyle="rgba(0,0,0,0.55)"; cx.fillRect(0,H-22,W,22);
+    cx.fillStyle="#fff"; cx.font="10px sans-serif"; cx.textAlign="center";
+    cx.fillText("◀ тап слева = прыжок (двойной)   |   тап справа = бросок инструмента ▶", W/2, H-7);
+    cx.restore();
+  }
+}
+
+// ─── ОВЕРЛЕИ ────────────────────────────────────────────────
+function drawBtn(label){
+  cx.fillStyle="#43a047"; rr(W/2-90,H/2+18,180,46,23); cx.fill();
+  cx.fillStyle="#fff"; cx.font="bold 18px sans-serif"; cx.textAlign="center";
+  cx.fillText(label, W/2, H/2+47);
+}
+
+function drawOverlay(title, sub, col, btn){
+  cx.fillStyle="rgba(0,0,0,0.72)"; cx.fillRect(0,0,W,H);
+  cx.fillStyle=col; cx.font="bold 24px sans-serif"; cx.textAlign="center";
+  cx.fillText(title, W/2, H/2-34);
+  cx.fillStyle="#ddd"; cx.font="14px sans-serif";
+  cx.fillText(sub, W/2, H/2-6);
+  drawBtn(btn);
+}
+
+// ─── ОТРИСОВКА СЦЕНЫ ────────────────────────────────────────
+function drawScene(){
+  cx.save();
+  if (shakeT>0) cx.translate((Math.random()-0.5)*5, (Math.random()-0.5)*5);
+  drawBG();
+  for (const o of obstacles) drawObstacle(o);
+  for (const e of enemies) drawForeman(e);
+  if (gstate==="boss" && boss) drawBoss();
+  for (const p of papers){
+    cx.save(); cx.translate(p.x,p.y); cx.rotate(p.ang);
+    cx.fillStyle="#fff9c4"; cx.fillRect(-7,-5,14,10);
+    cx.strokeStyle="#bbb"; cx.lineWidth=0.6; cx.strokeRect(-7,-5,14,10);
+    cx.strokeStyle="#c00"; cx.beginPath(); cx.moveTo(-4,-2); cx.lineTo(4,-2); cx.moveTo(-4,1); cx.lineTo(4,1); cx.stroke();
+    cx.restore();
+  }
+  drawSchrei();
+  drawAlexey();
+  for (const t of tools) drawTool(t.type, t.x, t.y, t.ang);
+  cx.restore();
+}
+
+// ─── LOOP ───────────────────────────────────────────────────
+function loop(){
+  requestAnimationFrame(loop);
+  fr++;
+  cx.setTransform(cv.width/W, 0, 0, cv.height/H, 0, 0);
+
+  if (gstate==="menu"){ drawMenuReal(); return; }
+
+  update();
+  drawScene();
+  drawHUD();
+
+  if (gstate==="dead") drawOverlay("🪤 ШРАЙБИКУС ДОГНАЛ!", "Дистанция: "+Math.floor(dist)+" м · Счёт: "+score, "#ff5252", "🔁 ЗАНОВО");
+  if (gstate==="win")  drawOverlay("💰 ЗАРПЛАТА ВЫБИТА!", "Бухгалтер сдался! Счёт: "+score, "#69f0ae", "▶ ЕЩЁ РАЗ");
+}
+
+// нормальное меню (без кривого превью)
+function drawMenuReal(){
+  drawBG();
+  cx.fillStyle="rgba(0,0,0,0.45)"; cx.fillRect(0,0,W,H);
+  cx.fillStyle="#ffeb3b"; cx.font="bold 24px sans-serif"; cx.textAlign="center";
+  cx.fillText("АЛЕКСЕЙ И ЗАРПЛАТА", W/2, 56);
+  cx.fillStyle="#fff"; cx.font="12px sans-serif";
+  cx.fillText("Беги по стройке от Шрайбикуса!", W/2, 82);
+  cx.fillText("Кидай отвёртки, бокорезы, пассатижи, мультиметр", W/2, 100);
+  cx.fillText("в прорабов в белых касках.", W/2, 116);
+  cx.fillStyle="#ffab91"; cx.font="11px sans-serif";
+  cx.fillText("В финале — бухгалтер, что зажал зарплату!", W/2, 138);
+
+  // живое превью: Алексей бежит, Шрайбикус догоняет
+  const sY = player.y, sOG = player.onGround, sRun = player.run;
+  player.run = fr*0.3; player.y = GROUND-PH; player.onGround = true;
+  const savedSx = schrei.x; schrei.x = PX-70;
+  cx.save(); cx.translate(0, -8); drawSchrei(); drawAlexey(); cx.restore();
+  schrei.x = savedSx; player.y=sY; player.onGround=sOG; player.run=sRun;
+
+  drawBtn("▶  БЕЖАТЬ");
+  cx.fillStyle="rgba(255,255,255,0.6)"; cx.font="10px sans-serif";
+  cx.fillText("тап слева — прыжок (двойной) · тап справа — бросок", W/2, H-12);
+}
+
+reset();
+gstate = "menu";
+loop();
+})();
+</script>
+</body>
+</html>
