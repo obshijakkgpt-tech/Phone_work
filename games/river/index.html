@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Одноногий через реку</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { margin:0; overflow:hidden; background:#000; touch-action:none; user-select:none; }
+canvas { position:fixed; top:0; left:0; display:block; }
+</style>
+</head>
+<body>
+<canvas id="g"></canvas>
+<script>
+(function () {
+"use strict";
+
+// ─── CANVAS ─────────────────────────────────────────────────
+const cv = document.getElementById("g");
+const cx = cv.getContext("2d");
+const W = 480, H = 300;
+function resize(){ cv.width = window.innerWidth; cv.height = window.innerHeight; }
+window.addEventListener("resize", resize); resize();
+function canvasXY(clientX, clientY){ return { x: clientX*W/cv.width, y: clientY*H/cv.height }; }
+
+// ─── CONSTANTS ──────────────────────────────────────────────
+const WATER = 208, G = 0.5, PVX = 7.0, PVY = 8.6;
+const PW = 16, PH = 38, HEADHALF = 22, NC = 16;
+
+// ─── STATE ──────────────────────────────────────────────────
+let man, crocs, cam, FARX, gstate, fr, score, crossed, best=0;
+let charging, pwr, pwrDir, hintA, splash;
+
+function genCrocs(){
+  crocs = [];
+  let x = 90;
+  for (let i = 0; i < NC; i++){
+    x += 70 + Math.random()*46;
+    const danger = i > 2 && Math.random() < 0.38;
+    crocs.push({
+      baseX: x, y: WATER, range: 8 + Math.random()*20, spd: 0.012 + Math.random()*0.018,
+      phase: Math.random()*6.28, len: 78 + Math.random()*26, dir: Math.random()<0.5?-1:1,
+      danger, mPhase: Math.random()*200, mPeriod: 150 + Math.floor(Math.random()*120), mouth:0
+    });
+  }
+  FARX = x + 130;
+}
+function crocX(c){ return c.baseX + Math.sin(fr*c.spd + c.phase) * c.range * c.dir; }
+
+function reset(){
+  genCrocs();
+  man = { x:10, y:WATER-6, vx:0, vy:0, onGround:true, plat:"bankL", croc:-1, face:1, hop:0, dead:0 };
+  cam = { x:0 };
+  fr = 0; score = 0; crossed = 0;
+  charging = false; pwr = 0; pwrDir = 1; hintA = 4*60; splash = null;
+  gstate = "play";
+}
+
+// ─── ВВОД (жесты: зажать = копить силу, отпустить = прыжок) ──
+function startCharge(){
+  if (gstate !== "play" || !man.onGround) return;
+  charging = true; pwr = 0.16; pwrDir = 1;
+}
+function launch(p){
+  man.vx = p * PVX; man.vy = -p * PVY;
+  man.onGround = false; man.plat = null; man.croc = -1; man.hop = 1;
+}
+function release(){
+  if (!charging) return;
+  charging = false;
+  if (gstate === "play" && man.onGround) launch(pwr);
+}
+
+const touchIds = new Set();
+document.addEventListener("touchstart", e => { e.preventDefault();
+  for (const t of e.changedTouches) touchIds.add(t.identifier);
+  if (gstate === "play") startCharge();
+  else { const p=canvasXY(e.changedTouches[0].clientX,e.changedTouches[0].clientY); if (hitBtn(p.x,p.y)) reset(); }
+}, {passive:false});
+document.addEventListener("touchend", e => { e.preventDefault();
+  for (const t of e.changedTouches) touchIds.delete(t.identifier);
+  if (gstate === "play") release();
+}, {passive:false});
+document.addEventListener("touchcancel", e => { for (const t of e.changedTouches) touchIds.delete(t.identifier); release(); }, {passive:false});
+
+cv.addEventListener("mousedown", () => { if (gstate==="play") startCharge(); });
+cv.addEventListener("mouseup", e => {
+  if (gstate==="play") release();
+  else { const p=canvasXY(e.clientX,e.clientY); if (hitBtn(p.x,p.y)) reset(); }
+});
+document.addEventListener("keydown", e => {
+  if (e.key===" "){ if (gstate==="play"){ if(!charging) startCharge(); } else reset(); }
+});
+document.addEventListener("keyup", e => { if (e.key===" " && gstate==="play") release(); });
+function hitBtn(x,y){ return x>W/2-85 && x<W/2+85 && y>H/2+30 && y<H/2+76; }
+
+// ─── UPDATE ─────────────────────────────────────────────────
+function update(){
+  fr++;
+  if (hintA>0) hintA--;
+  if (splash){ splash.t++; if (splash.t>40) splash=null; }
+
+  // пасти крокодилов
+  for (const c of crocs){
+    if (c.danger){
+      const ph = (fr + c.mPhase) % c.mPeriod;
+      const open = ph < 46;                      // окно открытой пасти
+      c.mouth += ((open?1:0) - c.mouth)*0.25;
+    }
+  }
+
+  if (gstate !== "play"){ return; }
+
+  if (charging){
+    pwr += pwrDir*0.021;
+    if (pwr >= 1){ pwr = 1; pwrDir = -1; }
+    if (pwr <= 0.16){ pwr = 0.16; pwrDir = 1; }
+  }
+
+  if (man.onGround){
+    // едем вместе с крокодилом
+    if (man.croc >= 0){ man.x = crocX(crocs[man.croc]) + man.rideOff; }
+    man.hop *= 0.8;
+  } else {
+    const prevY = man.y;
+    man.vy = Math.min(man.vy + G, 13);
+    man.x += man.vx; man.y += man.vy;
+
+    // приземление (когда падаем)
+    if (man.vy > 0){
+      // дальний берег
+      if (man.x >= FARX-4 && man.y >= WATER-6){
+        man.y = WATER-6; man.onGround=true; man.plat="bankR"; man.vx=0; man.vy=0;
+        gstate = "win"; score += 500; if (score>best) best=score;
+        return;
+      }
+      // крокодилы
+      let landed = false;
+      for (let i=0;i<crocs.length;i++){
+        const c = crocs[i]; const wx = crocX(c); const top = WATER-12;
+        if (Math.abs(man.x - wx) < HEADHALF && prevY <= top && man.y >= top){
+          if (c.mouth > 0.5){ die("chomp", wx); return; }   // попал в пасть
+          man.y = top; man.vy=0; man.vx=0; man.onGround=true;
+          man.croc = i; man.rideOff = man.x - wx; man.plat="croc"; man.hop=0;
+          if (!c.passed){ c.passed=true; crossed++; score += 100; }
+          landed = true; break;
+        }
+      }
+      if (!landed && man.y >= WATER){ die("drown", man.x); return; }
+    }
+    man.hop = Math.max(0, man.hop - 0.02);
+  }
+
+  // камера
+  cam.x += ((man.x - W*0.32) - cam.x) * 0.12;
+  cam.x = Math.max(0, Math.min(cam.x, FARX+140 - W));
+}
+
+function die(kind, x){
+  gstate = "dead"; man.dead = 1;
+  splash = { x, y: WATER, t:0, kind };
+  if (score > best) best = score;
+}
+
+// ─── HELPERS ────────────────────────────────────────────────
+function sx(wx){ return wx - cam.x; }
+function rr(x,y,w,h,r){ const m=Math.min(r,w/2,h/2); cx.beginPath();
+  cx.moveTo(x+m,y); cx.lineTo(x+w-m,y); cx.arcTo(x+w,y,x+w,y+h,m);
+  cx.lineTo(x+w,y+h-m); cx.arcTo(x+w,y+h,x,y+h,m);
+  cx.lineTo(x+m,y+h); cx.arcTo(x,y+h,x,y,m);
+  cx.lineTo(x,y+m); cx.arcTo(x,y,x+w,y,m); cx.closePath(); }
+
+// ─── ОТРИСОВКА ──────────────────────────────────────────────
+function drawBG(){
+  // небо
+  const sky = cx.createLinearGradient(0,0,0,WATER);
+  sky.addColorStop(0,"#aee0f0"); sky.addColorStop(1,"#dff3f0");
+  cx.fillStyle = sky; cx.fillRect(0,0,W,WATER);
+  // дальние пальмы/джунгли
+  cx.fillStyle = "#7cb342";
+  const o = (cam.x*0.3)%120;
+  for (let i=-1;i<W/120+2;i++){ const bx=i*120-o;
+    cx.beginPath(); cx.moveTo(bx,WATER); cx.quadraticCurveTo(bx+30,WATER-60,bx+60,WATER); cx.fill();
+    cx.beginPath(); cx.moveTo(bx+60,WATER); cx.quadraticCurveTo(bx+95,WATER-44,bx+120,WATER); cx.fill();
+  }
+  cx.fillStyle = "#558b2f"; cx.fillRect(0,WATER-6,W,6);
+  // вода
+  const wat = cx.createLinearGradient(0,WATER,0,H);
+  wat.addColorStop(0,"#2a9d9a"); wat.addColorStop(1,"#11616f");
+  cx.fillStyle = wat; cx.fillRect(0,WATER,W,H-WATER);
+  // блики/волны
+  cx.strokeStyle = "rgba(255,255,255,0.16)"; cx.lineWidth=2;
+  for (let r=0;r<5;r++){ const y=WATER+12+r*18; const o2=((cam.x*0.5)+r*40+fr*0.6)%80;
+    for (let i=-1;i<W/80+2;i++){ const bx=i*80-o2; cx.beginPath(); cx.arc(bx+20,y,8,0.15*Math.PI,0.85*Math.PI); cx.stroke(); } }
+}
+
+function drawBank(wx0, wx1, label){
+  const x0 = sx(wx0), x1 = sx(wx1);
+  if (x1 < -10 || x0 > W+10) return;
+  cx.fillStyle = "#6d4c2f"; cx.fillRect(x0, WATER-8, x1-x0, H-WATER+8);
+  cx.fillStyle = "#7cb342"; cx.fillRect(x0, WATER-14, x1-x0, 8);
+  cx.fillStyle = "#558b2f"; cx.fillRect(x0, WATER-8, x1-x0, 3);
+  // камешки
+  cx.fillStyle = "#5d4037";
+  for (let i=0;i<(x1-x0)/22;i++) cx.beginPath(), cx.arc(x0+10+i*22, WATER-2, 3, 0, Math.PI*2), cx.fill();
+  if (label){ cx.fillStyle="#fff"; cx.font="bold 11px sans-serif"; cx.textAlign="center";
+    cx.fillText(label, (x0+x1)/2, WATER-22); }
+}
+
+function drawCroc(c){
+  const wx = crocX(c), x = sx(wx);
+  if (x < -90 || x > W+90) return;
+  const bob = Math.sin(fr*0.05 + c.phase)*2;
+  const y = WATER + bob;
+  const dir = c.dir;            // ориентация морды
+  cx.save(); cx.translate(x, y); cx.scale(dir,1);
+
+  // тело под водой (тёмное)
+  cx.fillStyle = "#1f6f5c";
+  cx.beginPath(); cx.ellipse(-c.len*0.18, 6, c.len*0.5, 12, 0, 0, Math.PI*2); cx.fill();
+  // хвост
+  cx.fillStyle = "#2e8b57";
+  cx.beginPath(); cx.moveTo(-c.len*0.45,2); cx.lineTo(-c.len*0.78, -2+Math.sin(fr*0.1)*4);
+  cx.lineTo(-c.len*0.78, 8+Math.sin(fr*0.1)*4); cx.lineTo(-c.len*0.45,8); cx.closePath(); cx.fill();
+  // спина с гребнями над водой
+  cx.fillStyle = "#3aa76d";
+  cx.beginPath(); cx.ellipse(-2, -2, c.len*0.42, 9, 0, Math.PI, 0); cx.fill();
+  cx.fillStyle = "#2e8b57";
+  for (let i=0;i<5;i++){ const sxk=-c.len*0.3+i*12; cx.beginPath();
+    cx.moveTo(sxk,-7); cx.lineTo(sxk+5,-13); cx.lineTo(sxk+10,-7); cx.fill(); }
+
+  // голова/морда (площадка, по ней прыгают)
+  const open = c.mouth*9;       // раскрытие пасти
+  cx.fillStyle = "#3aa76d";
+  cx.beginPath(); cx.ellipse(c.len*0.33, -6, 24, 11, 0, 0, Math.PI*2); cx.fill();   // верх головы
+  // нижняя челюсть
+  cx.fillStyle = "#2e8b57";
+  cx.save(); cx.translate(c.len*0.5, -3); cx.rotate(c.mouth*0.5);
+  cx.fillStyle = "#2e8b57"; rr(0,0,26,7,2); cx.fill();
+  if (c.mouth>0.05){ cx.fillStyle="#b71c1c"; cx.fillRect(0,-1,24,2);
+    cx.fillStyle="#fff"; for(let i=0;i<6;i++) cx.fillRect(2+i*4,-3,2,3); }   // зубы низ
+  cx.restore();
+  // верхняя челюсть/морда
+  cx.fillStyle = c.danger && c.mouth>0.5 ? "#43b377" : "#3aa76d";
+  rr(c.len*0.33, -10-open*0.3, 28, 8+open*0.3, 3); cx.fill();
+  if (c.mouth>0.05){ cx.fillStyle="#fff"; for(let i=0;i<6;i++) cx.fillRect(c.len*0.34+i*4,-3-open*0.2,2,3); }
+  // ноздри
+  cx.fillStyle = "#1f6f5c"; cx.beginPath(); cx.arc(c.len*0.33+24,-12,1.6,0,Math.PI*2); cx.fill();
+  // глаз (бугор сверху)
+  cx.fillStyle = "#3aa76d"; cx.beginPath(); cx.arc(c.len*0.3,-16,5,0,Math.PI*2); cx.fill();
+  cx.fillStyle = "#fff"; cx.beginPath(); cx.arc(c.len*0.3,-16,3,0,Math.PI*2); cx.fill();
+  cx.fillStyle = "#111"; cx.beginPath(); cx.arc(c.len*0.3+1,-16,1.6,0,Math.PI*2); cx.fill();
+  if (c.danger){ // красноватый намёк на опасность
+    cx.fillStyle="rgba(255,0,0,"+(0.15+c.mouth*0.25)+")"; cx.beginPath(); cx.arc(c.len*0.3,-16,6,0,Math.PI*2); cx.fill();
+  }
+  cx.restore();
+}
+
+function drawMan(){
+  const x = sx(man.x), y = man.y;
+  const charging2 = charging && man.onGround;
+  const crouch = charging2 ? pwr*5 : 0;
+  const air = !man.onGround;
+  cx.save(); cx.translate(x, y);
+  if (man.face<0) cx.scale(-1,1);
+
+  // ОДНА нога
+  cx.strokeStyle = "#37474f"; cx.lineWidth = 6; cx.lineCap="round";
+  cx.beginPath(); cx.moveTo(0,-12+crouch);
+  if (air){ cx.lineTo(-4,-22); }              // нога поджата в прыжке
+  else { cx.lineTo(0,-2+crouch*0.3); }
+  cx.stroke();
+  // ступня
+  cx.fillStyle="#222";
+  if (air) cx.fillRect(-9,-25,11,5); else cx.fillRect(-5,-4,12,5);
+  // пустая подколотая штанина (второй ноги нет)
+  cx.fillStyle="#455a64"; cx.save(); cx.translate(4,-14+crouch); cx.rotate(0.5);
+  rr(0,0,6,9,2); cx.fill(); cx.restore();
+
+  // тело
+  cx.fillStyle="#e64a19"; rr(-8,-30+crouch,16,18,4); cx.fill();   // рубашка
+  cx.fillStyle="#bf360c"; cx.fillRect(-8,-22+crouch,16,3);
+
+  // руки (балансируют / вверх при прыжке)
+  cx.strokeStyle="#e64a19"; cx.lineWidth=4;
+  for (const s of [-1,1]){
+    cx.save(); cx.translate(s*7,-26+crouch);
+    const aa = air ? -2.3*s : (charging2 ? -1.2*s : (-0.6 + Math.sin(fr*0.2)*0.2)*s);
+    cx.rotate(aa);
+    cx.beginPath(); cx.moveTo(0,0); cx.lineTo(0,11); cx.stroke();
+    cx.fillStyle="#e8b48f"; cx.beginPath(); cx.arc(0,11,2.6,0,Math.PI*2); cx.fill();
+    cx.restore();
+  }
+
+  // голова
+  cx.fillStyle="#e8b48f"; cx.beginPath(); cx.arc(0,-36+crouch,8,0,Math.PI*2); cx.fill();
+  // глаза/рот
+  cx.fillStyle="#2c1a0e";
+  if (air){ cx.beginPath(); cx.arc(2,-37+crouch,1.6,0,Math.PI*2); cx.arc(-2,-37+crouch,1.6,0,Math.PI*2); cx.fill();
+    cx.strokeStyle="#2c1a0e"; cx.lineWidth=1.4; cx.beginPath(); cx.arc(0,-32+crouch,2.2,0,Math.PI*2); cx.stroke(); }
+  else { cx.beginPath(); cx.arc(2,-37+crouch,1.5,0,Math.PI*2); cx.arc(-2,-37+crouch,1.5,0,Math.PI*2); cx.fill();
+    cx.strokeStyle="#2c1a0e"; cx.lineWidth=1.4; cx.beginPath(); cx.arc(0,-33+crouch,2,0.1,Math.PI-0.1); cx.stroke(); }
+  // кепка
+  cx.fillStyle="#1565c0"; cx.beginPath(); cx.arc(0,-39+crouch,8,Math.PI,0); cx.fill();
+  cx.fillRect(-8,-40+crouch,11,3); cx.fillStyle="#0d47a1"; cx.fillRect(0,-40+crouch,10,2.5);
+  cx.restore();
+}
+
+function drawAimArc(){
+  if (!(charging && man.onGround)) return;
+  const p = pwr; let vx = p*PVX, vy = -p*PVY;
+  let px = man.x, py = man.y - 14;
+  cx.fillStyle = "rgba(255,255,255,0.7)";
+  for (let i=0;i<26;i++){
+    px += vx; py += vy; vy += G;
+    if (i%2===0){ cx.beginPath(); cx.arc(sx(px), py, 2.2, 0, Math.PI*2); cx.fill(); }
+    if (py > WATER) break;
+  }
+}
+
+function drawSplash(){
+  if (!splash) return;
+  const x = sx(splash.x), t = splash.t;
+  if (splash.kind==="drown"){
+    cx.fillStyle="rgba(255,255,255,0.8)";
+    for (let i=0;i<7;i++){ const a=i/7*Math.PI*2; const r=t*1.3;
+      cx.beginPath(); cx.arc(x+Math.cos(a)*r, WATER+Math.sin(a)*r*0.5-2, Math.max(0,4-t*0.08),0,Math.PI*2); cx.fill(); }
+    if (t>14){ cx.fillStyle="#e8b48f"; cx.font="14px sans-serif"; cx.textAlign="center"; cx.fillText("🫧", x, WATER-4-(t-14)); }
+  } else {
+    cx.fillStyle="#b71c1c"; cx.font="bold 18px sans-serif"; cx.textAlign="center";
+    cx.fillText("ХАМ!", x, WATER-20-t*0.4);
+  }
+}
+
+// ─── HUD / ОВЕРЛЕИ ──────────────────────────────────────────
+function drawHUD(){
+  cx.fillStyle="rgba(0,0,0,0.38)"; cx.fillRect(0,0,W,24);
+  cx.fillStyle="#ffeb3b"; cx.font="bold 14px monospace"; cx.textAlign="left";
+  cx.fillText(score+" очков", 8, 17);
+  cx.textAlign="right"; cx.fillStyle="#fff"; cx.font="bold 12px monospace";
+  cx.fillText("🐊 "+crossed+"/"+NC, W-8, 16);
+
+  // шкала силы
+  if (charging && man.onGround){
+    const bx=W/2-60, by=H-26;
+    cx.fillStyle="rgba(0,0,0,0.4)"; rr(bx-3,by-3,126,16,8); cx.fill();
+    cx.fillStyle="rgba(255,255,255,0.25)"; rr(bx,by,120,10,5); cx.fill();
+    cx.fillStyle = pwr>0.85?"#ff5252":(pwr>0.5?"#ffb300":"#69f0ae"); rr(bx,by,120*pwr,10,5); cx.fill();
+    cx.fillStyle="#fff"; cx.font="9px sans-serif"; cx.textAlign="center"; cx.fillText("СИЛА ПРЫЖКА", W/2, by-6);
+  }
+
+  if (hintA>0 && gstate==="play"){
+    const a=Math.min(1,hintA/60); cx.save(); cx.globalAlpha=a;
+    cx.fillStyle="rgba(0,0,0,0.5)"; cx.fillRect(0,H-22,W,22);
+    cx.fillStyle="#fff"; cx.font="10px sans-serif"; cx.textAlign="center";
+    cx.fillText("Зажми экран — копи силу прыжка (смотри дугу), отпусти — прыжок!", W/2, H-7);
+    cx.restore();
+  }
+}
+
+function drawBtn(label){
+  cx.fillStyle="#43a047"; rr(W/2-85,H/2+30,170,46,23); cx.fill();
+  cx.fillStyle="#fff"; cx.font="bold 18px sans-serif"; cx.textAlign="center";
+  cx.fillText(label, W/2, H/2+59);
+}
+function drawMenu(){
+  drawBG(); drawBank(-60,60,"СТАРТ");
+  cx.fillStyle="rgba(0,0,0,0.4)"; cx.fillRect(0,0,W,H);
+  cx.fillStyle="#ffeb3b"; cx.font="bold 24px sans-serif"; cx.textAlign="center";
+  cx.fillText("ОДНОНОГИЙ", W/2, H/2-58);
+  cx.fillText("ЧЕРЕЗ РЕКУ", W/2, H/2-32);
+  cx.fillStyle="#fff"; cx.font="12px sans-serif";
+  cx.fillText("Перепрыгай по головам крокодилов на тот берег.", W/2, H/2-6);
+  cx.fillStyle="#ffcdd2"; cx.font="11px sans-serif";
+  cx.fillText("Берегись открытых пастей! Зажми и отпусти — прыжок.", W/2, H/2+14);
+  drawBtn("▶  ПРЫГАТЬ");
+}
+function drawOverlay(title, sub, col, btn){
+  cx.fillStyle="rgba(0,0,0,0.72)"; cx.fillRect(0,0,W,H);
+  cx.fillStyle=col; cx.font="bold 24px sans-serif"; cx.textAlign="center";
+  cx.fillText(title, W/2, H/2-44);
+  cx.fillStyle="#fff"; cx.font="14px sans-serif";
+  cx.fillText(sub, W/2, H/2-16);
+  cx.fillStyle="#90caf9"; cx.font="12px sans-serif"; cx.fillText("Рекорд: "+best, W/2, H/2+8);
+  drawBtn(btn);
+}
+
+// ─── LOOP ───────────────────────────────────────────────────
+function loop(){
+  requestAnimationFrame(loop);
+  cx.setTransform(cv.width/W, 0, 0, cv.height/H, 0, 0);
+  if (gstate==="menu"){ fr++; drawMenu(); return; }
+
+  update();
+  drawBG();
+  drawBank(-60,60,"");
+  drawBank(FARX, FARX+140, "ФИНИШ");
+  for (const c of crocs) drawCroc(c);
+  drawAimArc();
+  if (gstate!=="dead") drawMan();
+  drawSplash();
+  drawHUD();
+
+  if (gstate==="dead") drawOverlay(splash&&splash.kind==="chomp"?"🐊 СЪЕЛИ!":"💦 УТОНУЛ!",
+    "Крокодилов пройдено: "+crossed, "#ff5252", "🔁 ЕЩЁ РАЗ");
+  if (gstate==="win") drawOverlay("🎉 ПЕРЕБРАЛСЯ!", "На том берегу! Очки: "+score, "#69f0ae", "▶ ЕЩЁ РАЗ");
+}
+
+reset();
+gstate = "menu";
+loop();
+})();
+</script>
+</body>
+</html>
