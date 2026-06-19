@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Перетягивание человечка</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { margin:0; overflow:hidden; background:#000; touch-action:none; user-select:none; }
+canvas { position:fixed; top:0; left:0; display:block; }
+</style>
+</head>
+<body>
+<canvas id="g"></canvas>
+<script>
+(function () {
+"use strict";
+
+const cv = document.getElementById("g");
+const cx = cv.getContext("2d");
+const W = 480, H = 300;
+function resize(){ cv.width = window.innerWidth; cv.height = window.innerHeight; }
+window.addEventListener("resize", resize); resize();
+function canvasXY(clientX, clientY){ return { x: clientX*W/cv.width, y: clientY*H/cv.height }; }
+
+// ─── CONSTANTS ──────────────────────────────────────────────
+const midX = W/2, CY = 168, RANGE = 110;
+const PULL = 0.040;               // сила одного тапа (к игроку, pos+)
+
+// ─── STATE ──────────────────────────────────────────────────
+let gstate, fr, pos, pullFx, aiBurst, aiBurstT, winner, rip, conf, hintA, best=0, wins=0;
+
+function reset(){
+  gstate="play"; fr=0; pos=0; pullFx=0; aiBurst=0; aiBurstT=120;
+  winner=null; rip=null; conf=[]; hintA=4*60;
+}
+
+// ─── ВВОД (тап = рывок к себе) ──────────────────────────────
+function pull(){
+  if (gstate!=="play") return;
+  pos += PULL; pullFx = Math.min(1, pullFx+0.5);
+}
+document.addEventListener("touchstart", e => { e.preventDefault();
+  if (gstate==="play"){ for (let i=0;i<e.changedTouches.length;i++) pull(); }
+  else { const p=canvasXY(e.changedTouches[0].clientX,e.changedTouches[0].clientY); if (hitBtn(p.x,p.y)) reset(); }
+}, {passive:false});
+cv.addEventListener("mousedown", e => {
+  if (gstate==="play") pull();
+  else { const p=canvasXY(e.clientX,e.clientY); if (hitBtn(p.x,p.y)) reset(); }
+});
+document.addEventListener("keydown", e => {
+  if (e.repeat) { if (gstate==="play") pull(); return; }
+  if (gstate==="play") pull(); else if (e.key===" "||e.key==="Enter") reset();
+});
+function hitBtn(x,y){ return x>W/2-85 && x<W/2+85 && y>H/2+36 && y<H/2+82; }
+
+// ─── UPDATE ─────────────────────────────────────────────────
+function update(){
+  fr++;
+  if (hintA>0) hintA--;
+  pullFx *= 0.88;
+
+  if (gstate==="play"){
+    // ИИ тянет вправо (pos-), сила растёт со временем + рывки
+    const ramp = 0.0036 + Math.min(0.0042, fr*0.0000028);
+    if (--aiBurstT <= 0){ aiBurst = 26 + Math.floor(Math.random()*22); aiBurstT = 90 + Math.floor(Math.random()*80); }
+    let ai = ramp;
+    if (aiBurst>0){ aiBurst--; ai += 0.0052; }
+    pos -= ai;
+
+    if (pos >= 1){ startRip("player"); }
+    else if (pos <= -1){ startRip("ai"); }
+  } else if (gstate==="rip"){
+    rip.t++;
+    for (const pc of rip.pieces){ pc.x += pc.vx; pc.y += pc.vy; pc.vy += 0.4; pc.ang += pc.av; }
+    for (const c of conf){ c.x+=c.vx; c.y+=c.vy; c.vy+=0.18; c.ang+=c.av; c.life--; }
+    conf = conf.filter(c=>c.life>0);
+    if (rip.t > 64){ gstate="over"; if (winner==="player"){ wins++; } }
+  }
+}
+
+function startRip(who){
+  winner = who; gstate = "rip";
+  const seam = midX - pos*RANGE;     // точка разрыва (там был «пупок»)
+  // верхняя половина (голова+торс) летит к победившей команде, ноги — к другой
+  const dir = who==="player" ? -1 : 1;   // победитель утаскивает кусок к себе
+  rip = { t:0, seam, pieces:[
+    { x:seam-26, y:CY, vx:dir*-1.4-2.2, vy:-3.2, ang:0, av:-0.12, kind:"top" },   // голова/торс — налево (к игроку, если он победил dir=-1 → влево сильнее)
+    { x:seam+26, y:CY, vx: 2.2, vy:-2.6, ang:0, av:0.12, kind:"legs" }            // ноги — направо
+  ]};
+  // подправим разлёт: куски летят к своим командам (голова к левой, ноги к правой) — всегда так
+  rip.pieces[0].vx = -3.0; rip.pieces[1].vx = 3.0;
+  // конфетти радости
+  for (let i=0;i<60;i++){
+    conf.push({ x: midX+(Math.random()-0.5)*120, y: CY-10, vx:(Math.random()-0.5)*7, vy:-Math.random()*7-1,
+      ang:Math.random()*6, av:(Math.random()-0.5)*0.4, life:60+Math.random()*40,
+      c:["#e53935","#43a047","#1e88e5","#fdd835","#ab47bc","#ff7043"][i%6], s:3+Math.random()*3 });
+  }
+}
+
+// ─── HELPERS ────────────────────────────────────────────────
+function rr(x,y,w,h,r){ const m=Math.min(r,w/2,h/2); cx.beginPath();
+  cx.moveTo(x+m,y); cx.lineTo(x+w-m,y); cx.arcTo(x+w,y,x+w,y+h,m);
+  cx.lineTo(x+w,y+h-m); cx.arcTo(x+w,y+h,x,y+h,m);
+  cx.lineTo(x+m,y+h); cx.arcTo(x,y+h,x,y,m);
+  cx.lineTo(x,y+m); cx.arcTo(x,y,x+w,y,m); cx.closePath(); }
+
+// ─── КОМАНДЫ ────────────────────────────────────────────────
+function drawPuller(x, y, dir, col, lean, cheer){
+  cx.save(); cx.translate(x,y); cx.scale(dir,1);
+  if (cheer){
+    // прыгает от радости, руки вверх
+    cx.strokeStyle="#37474f"; cx.lineWidth=5; cx.lineCap="round";
+    cx.beginPath(); cx.moveTo(-3,14); cx.lineTo(-6,26); cx.moveTo(3,14); cx.lineTo(6,26); cx.stroke();
+    cx.fillStyle=col; rr(-8,-4,16,18,4); cx.fill();
+    cx.strokeStyle=col; cx.lineWidth=4;
+    cx.beginPath(); cx.moveTo(-7,0); cx.lineTo(-14,-12); cx.moveTo(7,0); cx.lineTo(14,-12); cx.stroke();
+    cx.fillStyle="#e8b48f"; cx.beginPath(); cx.arc(-14,-12,3,0,Math.PI*2); cx.arc(14,-12,3,0,Math.PI*2); cx.fill();
+    cx.beginPath(); cx.arc(0,-14,8,0,Math.PI*2); cx.fill();
+    cx.fillStyle="#2c1a0e"; cx.beginPath(); cx.arc(-3,-15,1.4,0,Math.PI*2); cx.arc(3,-15,1.4,0,Math.PI*2); cx.fill();
+    cx.strokeStyle="#2c1a0e"; cx.lineWidth=1.4; cx.beginPath(); cx.arc(0,-11,2.6,0.1,Math.PI-0.1); cx.stroke();
+  } else {
+    // тянет: откинулся назад, руки вперёд к канату
+    cx.save(); cx.rotate(-lean*0.5);
+    cx.strokeStyle="#37474f"; cx.lineWidth=5; cx.lineCap="round";
+    cx.beginPath(); cx.moveTo(-2,14); cx.lineTo(-10,24); cx.moveTo(4,14); cx.lineTo(-2,26); cx.stroke();
+    cx.fillStyle=col; rr(-8,-4,16,18,4); cx.fill();
+    // руки вперёд (в сторону каната = +x в локальных)
+    cx.strokeStyle=col; cx.lineWidth=4;
+    cx.beginPath(); cx.moveTo(7,2); cx.lineTo(18,4); cx.moveTo(7,6); cx.lineTo(18,7); cx.stroke();
+    cx.fillStyle="#e8b48f"; cx.beginPath(); cx.arc(18,4,3,0,Math.PI*2); cx.arc(18,7,3,0,Math.PI*2); cx.fill();
+    // голова
+    cx.fillStyle="#e8b48f"; cx.beginPath(); cx.arc(-2,-14,8,0,Math.PI*2); cx.fill();
+    cx.fillStyle="#2c1a0e"; cx.beginPath(); cx.arc(1,-15,1.4,0,Math.PI*2); cx.fill();
+    cx.strokeStyle="#2c1a0e"; cx.lineWidth=1.4; cx.beginPath(); cx.moveTo(-4,-10); cx.lineTo(1,-10); cx.stroke(); // напряжён
+    cx.restore();
+  }
+  cx.restore();
+}
+
+function drawTeam(baseX, dir, col, lean, cheer){
+  // 2 бойца друг за другом
+  drawPuller(baseX + dir*0,  CY+44, dir, col, lean, cheer);
+  drawPuller(baseX + dir*30, CY+46, dir, col, lean*0.8, cheer);
+}
+
+// ─── ЧЕЛОВЕЧЕК-КАНАТ ────────────────────────────────────────
+function drawRopeMan(){
+  const seam = midX - pos*RANGE;
+  const GL = 120, GRr = 360;           // куда тянут руки/ноги
+  const stretch = Math.abs(pos);
+  const th = 26 - stretch*8;           // торс тоньше при натяжении
+  // руки тянутся к левой команде
+  cx.strokeStyle="#e8b48f"; cx.lineWidth=6; cx.lineCap="round";
+  cx.beginPath(); cx.moveTo(GL+14, CY-4); cx.lineTo(GL-6, CY+40); cx.stroke();
+  cx.beginPath(); cx.moveTo(GL+14, CY+4); cx.lineTo(GL-6, CY+44); cx.stroke();
+  // ноги тянутся к правой команде
+  cx.strokeStyle="#37474f"; cx.lineWidth=7;
+  cx.beginPath(); cx.moveTo(GRr-14, CY-2); cx.lineTo(GRr+8, CY+42); cx.stroke();
+  cx.beginPath(); cx.moveTo(GRr-14, CY+6); cx.lineTo(GRr+8, CY+46); cx.stroke();
+
+  // торс — растянутая «колбаса» от плеч (слева) до таза (справа)
+  cx.fillStyle="#f4a04a";
+  rr(GL+10, CY-th/2, GRr-14-(GL+10), th, th/2); cx.fill();
+  cx.fillStyle="rgba(255,255,255,0.25)"; cx.fillRect(GL+12, CY-th/2+2, GRr-30-GL, 3);
+  // линия натяжения/шов на месте будущего разрыва
+  cx.strokeStyle="rgba(150,60,30,0.5)"; cx.lineWidth=1.5; cx.setLineDash([3,3]);
+  cx.beginPath(); cx.moveTo(seam, CY-th/2); cx.lineTo(seam, CY+th/2); cx.stroke(); cx.setLineDash([]);
+
+  // голова слева
+  const hx = GL+6, hy = CY;
+  cx.fillStyle="#f3c89e"; cx.beginPath(); cx.arc(hx, hy, 14, 0, Math.PI*2); cx.fill();
+  cx.fillStyle="#2c1a0e"; cx.beginPath(); cx.arc(hx-3, hy-3, 2, 0, Math.PI*2); cx.arc(hx+4, hy-3, 2, 0, Math.PI*2); cx.fill();
+  // напряжённый рот (зубы)
+  cx.fillStyle="#fff"; rr(hx-5, hy+3, 11, 4, 1); cx.fill();
+  cx.strokeStyle="#888"; cx.lineWidth=0.6; for(let i=0;i<4;i++){ cx.beginPath(); cx.moveTo(hx-4+i*3,hy+3); cx.lineTo(hx-4+i*3,hy+7); cx.stroke(); }
+  // капельки пота
+  cx.fillStyle="#4fc3f7";
+  cx.beginPath(); cx.arc(hx+12, hy-8+Math.sin(fr*0.3)*2, 1.6,0,Math.PI*2); cx.fill();
+  // ступни справа
+  cx.fillStyle="#222"; cx.beginPath(); cx.ellipse(GRr+8, CY+42, 5,3,0,0,Math.PI*2); cx.ellipse(GRr+8, CY+46,5,3,0,0,Math.PI*2); cx.fill();
+}
+
+function drawRippedMan(){
+  // две половинки разлетаются
+  for (const pc of rip.pieces){
+    cx.save(); cx.translate(pc.x, pc.y); cx.rotate(pc.ang);
+    if (pc.kind==="top"){
+      cx.fillStyle="#f4a04a"; rr(-30,-13,30,26,8); cx.fill();    // обрывок торса
+      // рваный край справа
+      cx.fillStyle="#d9863a"; cx.beginPath(); cx.moveTo(0,-13);
+      for(let i=0;i<5;i++) cx.lineTo(-3+(i%2?4:0), -13+i*6.5); cx.lineTo(0,13); cx.closePath(); cx.fill();
+      // голова
+      cx.fillStyle="#f3c89e"; cx.beginPath(); cx.arc(-26,0,14,0,Math.PI*2); cx.fill();
+      cx.fillStyle="#2c1a0e"; cx.font="bold 8px sans-serif"; cx.textAlign="center";
+      cx.fillText("X",-29,2); cx.fillText("X",-23,2);
+      cx.strokeStyle="#2c1a0e"; cx.lineWidth=1.4; cx.beginPath(); cx.arc(-26,6,2.4,Math.PI,0); cx.stroke(); // ой-рот
+      // ручки
+      cx.strokeStyle="#e8b48f"; cx.lineWidth=5; cx.lineCap="round";
+      cx.beginPath(); cx.moveTo(-14,-2); cx.lineTo(-22,-14); cx.moveTo(-14,4); cx.lineTo(-22,14); cx.stroke();
+    } else {
+      cx.fillStyle="#f4a04a"; rr(0,-13,28,26,8); cx.fill();      // обрывок таза
+      cx.fillStyle="#d9863a"; cx.beginPath(); cx.moveTo(0,-13);
+      for(let i=0;i<5;i++) cx.lineTo(3-(i%2?4:0), -13+i*6.5); cx.lineTo(0,13); cx.closePath(); cx.fill();
+      // ноги
+      cx.strokeStyle="#37474f"; cx.lineWidth=7; cx.lineCap="round";
+      cx.beginPath(); cx.moveTo(22,-2); cx.lineTo(34,16); cx.moveTo(22,6); cx.lineTo(34,22); cx.stroke();
+      cx.fillStyle="#222"; cx.beginPath(); cx.ellipse(34,16,5,3,0,0,Math.PI*2); cx.ellipse(34,22,5,3,0,0,Math.PI*2); cx.fill();
+    }
+    cx.restore();
+  }
+  // брызги в месте разрыва
+  if (rip.t < 18){
+    cx.fillStyle="#ff7043";
+    for (let i=0;i<10;i++){ const a=i/10*Math.PI*2; const r=rip.t*3;
+      cx.beginPath(); cx.arc(rip.seam+Math.cos(a)*r, CY+Math.sin(a)*r, Math.max(0,4-rip.t*0.2),0,Math.PI*2); cx.fill(); }
+  }
+}
+
+// ─── ФОН ────────────────────────────────────────────────────
+function drawBG(){
+  const sky = cx.createLinearGradient(0,0,0,H);
+  sky.addColorStop(0,"#bfe3f5"); sky.addColorStop(1,"#e8f4ec");
+  cx.fillStyle=sky; cx.fillRect(0,0,W,H);
+  // трибуны вдали
+  cx.fillStyle="#cfd8dc"; cx.fillRect(0,60,W,40);
+  for (let i=0;i<W/10;i++){ cx.fillStyle=["#90a4ae","#b0bec5"][i%2]; cx.fillRect(i*10,64,8,32); }
+  // земля/арена
+  cx.fillStyle="#c8a25a"; cx.fillRect(0,CY+50,W,H-(CY+50));
+  cx.fillStyle="#b58e44"; cx.fillRect(0,CY+50,W,4);
+  // центральная черта и зоны победы
+  cx.strokeStyle="rgba(0,0,0,0.25)"; cx.lineWidth=2; cx.setLineDash([6,6]);
+  cx.beginPath(); cx.moveTo(midX, CY+10); cx.lineTo(midX, CY+50); cx.stroke(); cx.setLineDash([]);
+  cx.fillStyle="rgba(67,160,71,0.18)"; cx.fillRect(0,CY+44,midX-RANGE,6);
+  cx.fillStyle="rgba(229,57,53,0.18)"; cx.fillRect(midX+RANGE,CY+44,W-(midX+RANGE),6);
+}
+
+// ─── HUD ────────────────────────────────────────────────────
+function drawMeter(){
+  const bx=40, bw=W-80, by=30;
+  cx.fillStyle="rgba(0,0,0,0.25)"; rr(bx-4,by-4,bw+8,18,9); cx.fill();
+  cx.fillStyle="#43a047"; rr(bx,by,bw/2,10,5); cx.fill();
+  cx.fillStyle="#e53935"; rr(bx+bw/2,by,bw/2,10,5); cx.fill();
+  // метка позиции (pos: + к игроку слева)
+  const t = (1 - (pos+1)/2);       // pos=1 → t=0 (лево), pos=-1 → t=1 (право)
+  const mx = bx + bw*t;
+  cx.fillStyle="#fff"; cx.beginPath(); cx.moveTo(mx,by-6); cx.lineTo(mx-6,by-14); cx.lineTo(mx+6,by-14); cx.fill();
+  cx.fillStyle="#fff"; rr(mx-3,by-2,6,14,2); cx.fill();
+  // подписи
+  cx.fillStyle="#1b5e20"; cx.font="bold 10px sans-serif"; cx.textAlign="left"; cx.fillText("ТЫ", bx, by-8);
+  cx.fillStyle="#b71c1c"; cx.textAlign="right"; cx.fillText("СОПЕРНИК", bx+bw, by-8);
+}
+
+function drawHUD(){
+  drawMeter();
+  if (gstate==="play"){
+    cx.fillStyle="#1b5e20"; cx.font="bold 22px sans-serif"; cx.textAlign="center";
+    cx.save(); cx.globalAlpha=0.5+pullFx*0.5;
+    cx.fillText("ТЯНИ! 💪", midX, 70); cx.restore();
+  }
+  cx.fillStyle="#455a64"; cx.font="11px monospace"; cx.textAlign="center";
+  cx.fillText("побед: "+wins, midX, H-8);
+
+  if (hintA>0 && gstate==="play"){
+    const a=Math.min(1,hintA/60); cx.save(); cx.globalAlpha=a;
+    cx.fillStyle="rgba(0,0,0,0.5)"; cx.fillRect(0,H-24,W,18);
+    cx.fillStyle="#fff"; cx.font="10px sans-serif"; cx.textAlign="center";
+    cx.fillText("Быстро тапай по экрану — перетяни человечка на свою сторону!", midX, H-11);
+    cx.restore();
+  }
+}
+
+function drawBtn(label){
+  cx.fillStyle="#43a047"; rr(W/2-85,H/2+36,170,46,23); cx.fill();
+  cx.fillStyle="#fff"; cx.font="bold 18px sans-serif"; cx.textAlign="center";
+  cx.fillText(label, W/2, H/2+65);
+}
+function drawMenu(){
+  drawBG();
+  drawTeam(70,1,"#2e7d32",0.4,false); drawTeam(410,-1,"#c62828",0.4,false);
+  drawRopeMan();
+  cx.fillStyle="rgba(0,0,0,0.42)"; cx.fillRect(0,0,W,H);
+  cx.fillStyle="#ffeb3b"; cx.font="bold 23px sans-serif"; cx.textAlign="center";
+  cx.fillText("ПЕРЕТЯГИВАНИЕ", midX, H/2-52);
+  cx.fillText("ЧЕЛОВЕЧКА", midX, H/2-26);
+  cx.fillStyle="#fff"; cx.font="12px sans-serif";
+  cx.fillText("Тапай как бешеный и перетяни его на себя.", midX, H/2-2);
+  cx.fillStyle="#ff8a80"; cx.font="11px sans-serif";
+  cx.fillText("Победитель радостно разрывает беднягу пополам!", midX, H/2+16);
+  drawBtn("▶  ТЯНУТЬ");
+}
+function drawOver(){
+  cx.fillStyle="rgba(0,0,0,0.7)"; cx.fillRect(0,0,W,H);
+  const win = winner==="player";
+  cx.fillStyle= win?"#69f0ae":"#ff5252"; cx.font="bold 24px sans-serif"; cx.textAlign="center";
+  cx.fillText(win?"🎉 ПЕРЕТЯНУЛ!":"💀 ПРОИГРАЛ!", midX, H/2-40);
+  cx.fillStyle="#fff"; cx.font="14px sans-serif";
+  cx.fillText(win?"Разорвал человечка в свою пользу!":"Соперник разорвал человечка!", midX, H/2-12);
+  drawBtn(win?"▶ ЕЩЁ РАЗ":"🔁 РЕВАНШ");
+}
+
+// ─── LOOP ───────────────────────────────────────────────────
+function loop(){
+  requestAnimationFrame(loop);
+  cx.setTransform(cv.width/W, 0, 0, cv.height/H, 0, 0);
+  if (gstate==="menu"){ fr++; drawMenu(); return; }
+
+  update();
+  drawBG();
+
+  if (gstate==="rip" || gstate==="over"){
+    const cheer = true;
+    drawTeam(70 - (winner==="player"?0:0), 1, "#2e7d32", 0, winner==="player");
+    drawTeam(410, -1, "#c62828", 0, winner==="ai");
+    if (rip) drawRippedMan();
+    // конфетти
+    for (const c of conf){ cx.save(); cx.translate(c.x,c.y); cx.rotate(c.ang); cx.fillStyle=c.c; cx.fillRect(-c.s/2,-c.s/2,c.s,c.s); cx.restore(); }
+  } else {
+    const lean = 0.4 + pullFx*0.5;
+    drawTeam(70, 1, "#2e7d32", lean + (pos>0?0.2:0), false);
+    drawTeam(410, -1, "#c62828", 0.4 + (pos<0?0.2:0), false);
+    drawRopeMan();
+  }
+
+  drawHUD();
+  if (gstate==="over") drawOver();
+}
+
+reset();
+gstate = "menu";
+loop();
+})();
+</script>
+</body>
+</html>
