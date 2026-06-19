@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Ошибся Дверью — Шахта Лифта</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { margin:0; overflow:hidden; background:#000; touch-action:none; user-select:none; }
+canvas { position:fixed; top:0; left:0; display:block; }
+</style>
+</head>
+<body>
+<canvas id="g"></canvas>
+<script>
+(function () {
+"use strict";
+
+// ─── CANVAS ─────────────────────────────────────────────────
+const cv = document.getElementById("g");
+const cx = cv.getContext("2d");
+const W = 320, H = 560;
+function resize(){ cv.width = window.innerWidth; cv.height = window.innerHeight; }
+window.addEventListener("resize", resize); resize();
+function canvasXY(clientX, clientY){ return { x: clientX*W/cv.width, y: clientY*H/cv.height }; }
+
+// ─── ГЕОМЕТРИЯ ШАХТЫ ────────────────────────────────────────
+const WALL = 56;                 // толщина стен по краям
+const IL = WALL + 8, IR = W - WALL - 8;   // внутренние границы шахты
+const R = 13;                    // радиус тела человечка
+const FH = 140;                  // высота этажа
+const N = 45;                    // число этажей
+const TOP = 200;                 // y первого проёма
+const BOTTOM = TOP + N*FH + 70;  // дно шахты
+const GR = 0.34, AIRX = 0.62, MAXVX = 6.2, MAXVY = 11;
+
+// ─── STATE ──────────────────────────────────────────────────
+let man, camY, score, combo, comboT, mult, fr, gstate, ledges, pops, shakeT, hintA, best=0;
+
+function makeLedges(){
+  ledges = [];
+  for (let i = 0; i < N; i++){
+    const y = TOP + i*FH;
+    // на каждом этаже проём с обеих сторон: бетонные пороги выступают в шахту
+    // выступ слева и/или справа (рандомная длина), всегда есть щель для пролёта
+    const leftLen  = 38 + Math.floor(Math.random()*54);
+    const rightLen = 38 + Math.floor(Math.random()*54);
+    const both = Math.random() < 0.55;
+    const onlyLeft = !both && Math.random() < 0.5;
+    if (both || onlyLeft)
+      ledges.push({ side:-1, x:IL, y, w:leftLen, h:16, floor:i, hit:-99 });
+    if (both || !onlyLeft)
+      ledges.push({ side:1, x:IR-rightLen, y:y+(both?64:0), w:rightLen, h:16, floor:i, hit:-99 });
+    // иногда торчит арматура (тонкий выступ) — мелкий бонус
+    if (Math.random()<0.35){
+      const s = Math.random()<0.5?-1:1;
+      ledges.push({ side:s, rebar:true, x: s<0?IL:IR-22, y:y+100, w:22, h:5, floor:i, hit:-99 });
+    }
+  }
+}
+
+function reset(){
+  man = { x:(IL+IR)/2, y:60, vx:0, vy:0, ang:0, av:0, hit:0, bruises:[], hatOn:true, hatY:0, hatVy:0, hatAng:0 };
+  camY = 0; score = 0; combo = 0; comboT = 0; mult = 1; fr = 0;
+  pops = []; shakeT = 0; hintA = 3*60;
+  makeLedges();
+  gstate = "fall";
+}
+
+// ─── ВВОД (держать половину экрана = лететь в сторону) ───────
+const touches = new Map();
+const steer = { l:false, r:false };
+function syncSteer(){ steer.l = steer.r = false;
+  for (const [,t] of touches){ if (t.cx < W/2) steer.l = true; else steer.r = true; } }
+document.addEventListener("touchstart", e => { e.preventDefault();
+  for (const t of e.changedTouches){ const p=canvasXY(t.clientX,t.clientY);
+    touches.set(t.identifier,{cx:p.x,cy:p.y,sy:p.y}); }
+  syncSteer();
+  if (gstate==="done"||gstate==="menu"){ const p=canvasXY(e.changedTouches[0].clientX,e.changedTouches[0].clientY); if (hitBtn(p.x,p.y)) reset(); }
+}, {passive:false});
+document.addEventListener("touchmove", e => { e.preventDefault();
+  for (const t of e.changedTouches){ const at=touches.get(t.identifier); if(at){ const p=canvasXY(t.clientX,t.clientY); at.cx=p.x; at.cy=p.y; } }
+  syncSteer();
+}, {passive:false});
+document.addEventListener("touchend", e => { e.preventDefault();
+  for (const t of e.changedTouches) touches.delete(t.identifier);
+  syncSteer();
+}, {passive:false});
+cv.addEventListener("click", e => { const p=canvasXY(e.clientX,e.clientY);
+  if (gstate==="done"||gstate==="menu"){ if (hitBtn(p.x,p.y)) reset(); } });
+const keys={};
+document.addEventListener("keydown", e=>{ keys[e.key]=true;
+  if ((gstate==="done"||gstate==="menu") && (e.key===" "||e.key==="Enter")) reset(); });
+document.addEventListener("keyup", e=>{ keys[e.key]=false; });
+function hitBtn(x,y){ return x>W/2-85 && x<W/2+85 && y>H/2+40 && y<H/2+86; }
+
+// ─── ФИЗИКА ─────────────────────────────────────────────────
+function addPop(x,y,txt,col){ pops.push({x,y,txt,col,life:46}); }
+
+function impact(speed, ledge){
+  if (fr - ledge.hit < 10) return;     // не считать один и тот же выступ часто
+  ledge.hit = fr;
+  comboT = 55;
+  combo++;
+  mult = 1 + Math.min(8, Math.floor(combo/3));
+  const base = ledge.rebar ? 8 : 25;
+  const pts = Math.round((base + speed*6) * mult);
+  score += pts;
+  shakeT = Math.min(16, 6 + speed);
+  man.hit = 14;
+  man.av = (Math.random()-0.5) * (0.4 + speed*0.05);
+  if (!ledge.rebar && man.hatOn && Math.random()<0.7){ man.hatOn=false; man.hatVy=-3.5; man.hatAng=(Math.random()-0.5); }
+  // синяк
+  man.bruises.push({ ox:(Math.random()-0.5)*16, oy:(Math.random()-0.5)*20, r:2+Math.random()*3,
+    c: Math.random()<0.5?"#7b1fa2":"#c62828" });
+  if (man.bruises.length>14) man.bruises.shift();
+  addPop(man.x, man.y-18, "+"+pts+(mult>1?(" x"+mult):""), ledge.rebar?"#80d8ff":"#ffeb3b");
+}
+
+function circleRect(px,py,r, rx,ry,rw,rh){
+  const nx = Math.max(rx, Math.min(px, rx+rw));
+  const ny = Math.max(ry, Math.min(py, ry+rh));
+  const dx = px-nx, dy = py-ny; const d2 = dx*dx+dy*dy;
+  if (d2 >= r*r) return null;
+  let d = Math.sqrt(d2);
+  if (d === 0){ // центр внутри — выталкиваем по меньшему проникновению
+    const left=px-rx, right=rx+rw-px, top=py-ry, bot=ry+rh-py;
+    const m=Math.min(left,right,top,bot);
+    if (m===left) return {nx:-1,ny:0,pen:r+left};
+    if (m===right) return {nx:1,ny:0,pen:r+right};
+    if (m===top) return {nx:0,ny:-1,pen:r+top};
+    return {nx:0,ny:1,pen:r+bot};
+  }
+  return { nx:dx/d, ny:dy/d, pen:r-d };
+}
+
+function update(){
+  if (hintA>0) hintA--;
+  if (shakeT>0) shakeT--;
+  fr++;
+
+  if (gstate !== "fall"){ for (const p of pops) p.life--; pops=pops.filter(p=>p.life>0); return; }
+
+  // управление
+  const goL = steer.l || keys["ArrowLeft"] || keys["a"];
+  const goR = steer.r || keys["ArrowRight"] || keys["d"];
+  if (goL) man.vx -= AIRX;
+  if (goR) man.vx += AIRX;
+  if (!goL && !goR) man.vx *= 0.94;
+  man.vx = Math.max(-MAXVX, Math.min(MAXVX, man.vx));
+
+  // гравитация
+  man.vy = Math.min(man.vy + GR, MAXVY);
+  man.x += man.vx; man.y += man.vy;
+  man.ang += man.av; man.av *= 0.96;
+  if (man.hit>0) man.hit--;
+
+  // каска улетела
+  if (!man.hatOn){ man.hatVy += GR*0.7; man.hatY += man.hatVy; man.hatAng += 0.12; }
+
+  // стены шахты
+  if (man.x < IL+R){ man.x = IL+R; if (man.vx<0){ const s=Math.abs(man.vx); man.vx=Math.abs(man.vx)*0.5; if(s>1.5){score+=Math.round(s*3); addPop(man.x,man.y-16,"+"+Math.round(s*3),"#b0bec5"); shakeT=Math.max(shakeT,5);} } }
+  if (man.x > IR-R){ man.x = IR-R; if (man.vx>0){ const s=Math.abs(man.vx); man.vx=-Math.abs(man.vx)*0.5; if(s>1.5){score+=Math.round(s*3); addPop(man.x,man.y-16,"+"+Math.round(s*3),"#b0bec5"); shakeT=Math.max(shakeT,5);} } }
+
+  // выступы
+  // выступы — удар гасит падение и отклоняет вбок, но человечек всегда летит вниз
+  for (const lg of ledges){
+    if (Math.abs(lg.y - man.y) > 90) continue;
+    const c = circleRect(man.x, man.y, R, lg.x, lg.y, lg.w, lg.h);
+    if (c){
+      const speed = Math.abs(man.vx*c.nx + man.vy*c.ny);
+      // выталкиваем из выступа
+      man.x += c.nx*c.pen; man.y += c.ny*c.pen;
+      // всегда продолжаем падать (теряем часть скорости), отскок вверх не даём
+      man.vy = Math.max(1.4, man.vy*(lg.rebar?0.78:0.55));
+      // отклонение к центру шахты (от стены, к которой прижат выступ)
+      const away = (lg.side < 0) ? 1 : -1;
+      man.vx += away * (2 + speed*(lg.rebar?0.25:0.45));
+      man.vx = Math.max(-MAXVX, Math.min(MAXVX, man.vx));
+      man.av += (Math.random()-0.5)*0.35;
+      if (speed > 1.0) impact(speed, lg);
+    }
+  }
+
+  // комбо-таймер
+  if (comboT>0){ comboT--; if (comboT===0){ combo=0; mult=1; } }
+
+  // камера
+  const target = man.y - H*0.36;
+  camY += (target - camY)*0.18;
+  if (camY < 0) camY = 0;
+  if (camY > BOTTOM - H + 80) camY = BOTTOM - H + 80;
+
+  // попапы
+  for (const p of pops){ p.y -= 0.6; p.life--; }
+  pops = pops.filter(p=>p.life>0);
+
+  // дно
+  if (man.y >= BOTTOM - R){
+    man.y = BOTTOM - R; man.vy=0; man.vx*=0.5;
+    gstate = "done";
+    if (score > best) best = score;
+  }
+}
+
+// ─── HELPERS ────────────────────────────────────────────────
+function sy(wy){ return wy - camY; }
+function rr(x,y,w,h,r){ const m=Math.min(r,w/2,h/2); cx.beginPath();
+  cx.moveTo(x+m,y); cx.lineTo(x+w-m,y); cx.arcTo(x+w,y,x+w,y+h,m);
+  cx.lineTo(x+w,y+h-m); cx.arcTo(x+w,y+h,x,y+h,m);
+  cx.lineTo(x+m,y+h); cx.arcTo(x,y+h,x,y,m);
+  cx.lineTo(x,y+m); cx.arcTo(x,y,x+w,y,m); cx.closePath(); }
+
+// ─── ОТРИСОВКА ШАХТЫ ────────────────────────────────────────
+function drawShaft(){
+  // тёмный фон шахты
+  const g = cx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,"#3b3f45"); g.addColorStop(1,"#23262b");
+  cx.fillStyle = g; cx.fillRect(0,0,W,H);
+
+  // внутренняя «глубина» — вертикальные направляющие лифта
+  cx.strokeStyle = "rgba(0,0,0,0.35)"; cx.lineWidth = 6;
+  cx.beginPath(); cx.moveTo((IL+IR)/2-30,0); cx.lineTo((IL+IR)/2-30,H);
+  cx.moveTo((IL+IR)/2+30,0); cx.lineTo((IL+IR)/2+30,H); cx.stroke();
+  cx.strokeStyle = "rgba(255,255,255,0.05)"; cx.lineWidth=2;
+  cx.beginPath(); cx.moveTo((IL+IR)/2-30,0); cx.lineTo((IL+IR)/2-30,H);
+  cx.moveTo((IL+IR)/2+30,0); cx.lineTo((IL+IR)/2+30,H); cx.stroke();
+  // висящий трос
+  cx.strokeStyle="rgba(0,0,0,0.5)"; cx.lineWidth=2;
+  cx.beginPath(); cx.moveTo((IL+IR)/2, 0); cx.lineTo((IL+IR)/2, sy(TOP-40)); cx.stroke();
+
+  // боковые стены (бетон)
+  cx.fillStyle = "#6b6f75"; cx.fillRect(0,0,WALL,H); cx.fillRect(W-WALL,0,WALL,H);
+  cx.fillStyle = "#5a5e63"; cx.fillRect(WALL-6,0,6,H); cx.fillRect(W-WALL,0,6,H);
+  // текстура стен (опалубка)
+  cx.strokeStyle = "rgba(0,0,0,0.12)"; cx.lineWidth=1;
+  const off = ((-camY)%48+48)%48;
+  for (let y=off-48; y<H; y+=48){
+    cx.beginPath(); cx.moveTo(0,y); cx.lineTo(WALL,y); cx.moveTo(W-WALL,y); cx.lineTo(W,y); cx.stroke();
+  }
+
+  // этажи: проёмы, пороги, номера
+  for (let i=0;i<N;i++){
+    const wy = TOP + i*FH;
+    const ys = sy(wy);
+    if (ys < -160 || ys > H+60) continue;
+    // отметка перекрытия (плита) по всей ширине между стен — тонкая
+    cx.fillStyle = "rgba(0,0,0,0.22)"; cx.fillRect(WALL, ys+FH-18, W-2*WALL, 4);
+    // дверные проёмы (тёмные ниши) в стенах
+    cx.fillStyle = "#1a1c1f";
+    cx.fillRect(WALL-2, ys-44, 10, 70);          // левый проём (темнота за стеной)
+    cx.fillRect(W-WALL-8, ys-44, 10, 70);
+    // номер этажа
+    cx.fillStyle = "#ffd54f"; cx.font = "bold 13px monospace"; cx.textAlign="center";
+    cx.save(); cx.globalAlpha=0.8;
+    cx.fillText((N-i)+"", WALL/2, ys+6); cx.fillText((N-i)+"", W-WALL/2, ys+6);
+    cx.restore();
+  }
+
+  // выступы-пороги (по ним и бьётся человечек)
+  for (const lg of ledges){
+    const ys = sy(lg.y);
+    if (ys < -40 || ys > H+20) continue;
+    if (lg.rebar){
+      cx.strokeStyle = (fr-lg.hit<8)?"#fff":"#9e9e9e"; cx.lineWidth=3; cx.lineCap="round";
+      cx.beginPath(); cx.moveTo(lg.x, ys+2); cx.lineTo(lg.x+lg.w*lg.side*-0+ (lg.side<0?lg.w:0), ys+2);
+      // нарисуем как ломаную арматуру
+      const x0 = lg.side<0?lg.x:lg.x+lg.w, x1=lg.side<0?lg.x+lg.w:lg.x;
+      cx.beginPath(); cx.moveTo(x0,ys); cx.lineTo((x0+x1)/2,ys+4); cx.lineTo(x1,ys+1); cx.stroke();
+    } else {
+      const flash = fr-lg.hit<8;
+      cx.fillStyle = flash ? "#ffd180" : "#8d9197";
+      rr(lg.x, ys, lg.w, lg.h, 2); cx.fill();
+      cx.fillStyle = flash ? "#ffab40" : "#71757b";
+      cx.fillRect(lg.x, ys, lg.w, 3);
+      cx.fillStyle = "rgba(0,0,0,0.25)"; cx.fillRect(lg.x, ys+lg.h-3, lg.w, 3);
+      // торчащий уголок (опасная кромка)
+      cx.fillStyle = flash ? "#ff7043" : "#5d4037";
+      const ex = lg.side<0 ? lg.x+lg.w-3 : lg.x;
+      cx.fillRect(ex, ys-3, 3, lg.h+3);
+    }
+  }
+
+  // дно — куча песка/строймусора
+  const by = sy(BOTTOM);
+  if (by < H+40){
+    cx.fillStyle = "#c9a86a"; cx.beginPath();
+    cx.moveTo(WALL, by+20); cx.quadraticCurveTo((IL+IR)/2, by-26, W-WALL, by+20);
+    cx.lineTo(W-WALL, H+40); cx.lineTo(WALL, H+40); cx.closePath(); cx.fill();
+    cx.fillStyle="#b3925a";
+    for (let i=0;i<8;i++){ cx.fillRect(WALL+12+i*26, by-6+Math.sin(i)*6, 8, 6); }
+  }
+}
+
+// ─── ЧЕЛОВЕЧЕК ──────────────────────────────────────────────
+function drawMan(){
+  const x = man.x, y = sy(man.y);
+  // улетевшая каска
+  if (!man.hatOn){
+    cx.save(); cx.translate(x, y - 30 + man.hatY); cx.rotate(man.hatAng);
+    cx.fillStyle="#f4511e"; cx.beginPath(); cx.arc(0,0,9,Math.PI,0); cx.fill(); cx.fillRect(-11,-1,22,4);
+    cx.restore();
+  }
+
+  cx.save(); cx.translate(x, y); cx.rotate(man.ang);
+  const t = fr*0.4;
+  const flail = man.hit>0 ? 1.6 : 1;        // сильнее машет при ударе
+  // руки (машут вверх)
+  cx.strokeStyle="#1565c0"; cx.lineWidth=5; cx.lineCap="round";
+  for (const s of [-1,1]){
+    cx.save(); cx.translate(s*7,-2);
+    cx.rotate(s*(-2.2 + Math.sin(t*1.3+s)*0.5*flail));
+    cx.beginPath(); cx.moveTo(0,0); cx.lineTo(0,12); cx.stroke();
+    cx.fillStyle="#e8b48f"; cx.beginPath(); cx.arc(0,12,3,0,Math.PI*2); cx.fill();
+    cx.restore();
+  }
+  // ноги (болтаются)
+  cx.strokeStyle="#37474f"; cx.lineWidth=5;
+  for (const s of [-1,1]){
+    cx.save(); cx.translate(s*4,12);
+    cx.rotate(s*(0.5 + Math.sin(t*1.1+s)*0.6*flail));
+    cx.beginPath(); cx.moveTo(0,0); cx.lineTo(0,13); cx.stroke();
+    cx.fillStyle="#222"; cx.beginPath(); cx.arc(0,13,3,0,Math.PI*2); cx.fill();
+    cx.restore();
+  }
+  // тело — рабочая куртка
+  cx.fillStyle="#1976d2"; rr(-8,-2,16,16,4); cx.fill();
+  cx.fillStyle="#fdd835"; cx.fillRect(-8,4,16,2);     // светополоса
+  // синяки на теле
+  for (const b of man.bruises){ cx.fillStyle=b.c; cx.globalAlpha=0.7;
+    cx.beginPath(); cx.arc(b.ox*0.4, 4+b.oy*0.3, b.r*0.7,0,Math.PI*2); cx.fill(); }
+  cx.globalAlpha=1;
+  // голова
+  cx.fillStyle="#e8b48f"; cx.beginPath(); cx.arc(0,-12,9,0,Math.PI*2); cx.fill();
+  // синяки/шишки на голове
+  for (const b of man.bruises){ if (b.oy<0){ cx.fillStyle=b.c; cx.globalAlpha=0.7;
+    cx.beginPath(); cx.arc(b.ox*0.5,-12+b.oy*0.15,b.r,0,Math.PI*2); cx.fill(); } }
+  cx.globalAlpha=1;
+  // лицо
+  cx.fillStyle="#2c1a0e";
+  if (man.hit>0){ // боль — крестики и "!"
+    cx.lineWidth=1.6; cx.strokeStyle="#2c1a0e";
+    cx.beginPath(); cx.moveTo(-5,-14); cx.lineTo(-1,-10); cx.moveTo(-1,-14); cx.lineTo(-5,-10);
+    cx.moveTo(2,-14); cx.lineTo(6,-10); cx.moveTo(6,-14); cx.lineTo(2,-10); cx.stroke();
+    cx.fillStyle="#5d3a1a"; cx.beginPath(); cx.arc(0,-7,2.4,0,Math.PI*2); cx.fill();
+  } else { // испуг — большие глаза и рот "О"
+    cx.beginPath(); cx.arc(3,-13,1.7,0,Math.PI*2); cx.arc(-3,-13,1.7,0,Math.PI*2); cx.fill();
+    cx.strokeStyle="#2c1a0e"; cx.lineWidth=1.5; cx.beginPath(); cx.arc(0,-8,2.4,0,Math.PI*2); cx.stroke();
+  }
+  // каска на голове (пока не улетела)
+  if (man.hatOn){
+    cx.fillStyle="#f4511e"; cx.beginPath(); cx.arc(0,-17,10,Math.PI,0); cx.fill();
+    cx.fillRect(-12,-18,24,4); cx.fillStyle="#d84315"; cx.fillRect(-12,-15,24,2);
+  }
+  cx.restore();
+
+  // эффект удара
+  if (man.hit>10){
+    cx.strokeStyle="#fff59d"; cx.lineWidth=2;
+    for (let i=0;i<6;i++){ const a=i/6*Math.PI*2; cx.beginPath();
+      cx.moveTo(x+Math.cos(a)*14,y+Math.sin(a)*14); cx.lineTo(x+Math.cos(a)*22,y+Math.sin(a)*22); cx.stroke(); }
+  }
+}
+
+// ─── HUD / ОВЕРЛЕИ ──────────────────────────────────────────
+function drawHUD(){
+  // счёт
+  cx.fillStyle="rgba(0,0,0,0.4)"; cx.fillRect(0,0,W,30);
+  cx.fillStyle="#ffeb3b"; cx.font="bold 18px monospace"; cx.textAlign="left";
+  cx.fillText(score+"", 10, 22);
+  cx.font="9px sans-serif"; cx.fillStyle="#fff"; cx.fillText("очки (урон)", 10, 30);
+  // глубина
+  const floor = Math.max(0, Math.min(N, Math.floor((man.y-TOP)/FH)+1));
+  cx.textAlign="right"; cx.fillStyle="#fff"; cx.font="bold 12px monospace";
+  cx.fillText("этаж "+(N-floor+1>0?(N-floor):0)+"/"+N, W-10, 16);
+  cx.fillStyle="#90caf9"; cx.font="9px sans-serif"; cx.fillText("рекорд "+best, W-10, 27);
+
+  // комбо
+  if (mult>1 && gstate==="fall"){
+    cx.textAlign="center"; cx.fillStyle="#ff7043"; cx.font="bold 16px sans-serif";
+    cx.save(); cx.globalAlpha = Math.min(1, comboT/30);
+    cx.fillText("КОМБО x"+mult, W/2, 50); cx.restore();
+  }
+
+  // попапы очков
+  cx.textAlign="center"; cx.font="bold 12px sans-serif";
+  for (const p of pops){ cx.globalAlpha=Math.min(1,p.life/30); cx.fillStyle=p.col;
+    cx.fillText(p.txt, p.x, sy(p.y)); }
+  cx.globalAlpha=1;
+
+  if (hintA>0 && gstate==="fall"){
+    const a=Math.min(1,hintA/60); cx.save(); cx.globalAlpha=a;
+    cx.fillStyle="rgba(0,0,0,0.55)"; cx.fillRect(0,H-24,W,24);
+    cx.fillStyle="#fff"; cx.font="10px sans-serif"; cx.textAlign="center";
+    cx.fillText("◀ держи слева / справа ▶ — рули и бейся о пороги ради очков!", W/2, H-9);
+    cx.restore();
+  }
+}
+
+function drawBtn(label){
+  cx.fillStyle="#43a047"; rr(W/2-85,H/2+40,170,46,23); cx.fill();
+  cx.fillStyle="#fff"; cx.font="bold 18px sans-serif"; cx.textAlign="center";
+  cx.fillText(label, W/2, H/2+69);
+}
+
+function drawMenu(){
+  drawShaft();
+  cx.fillStyle="rgba(0,0,0,0.5)"; cx.fillRect(0,0,W,H);
+  cx.fillStyle="#ff7043"; cx.font="bold 26px sans-serif"; cx.textAlign="center";
+  cx.fillText("ОШИБСЯ", W/2, H/2-86);
+  cx.fillText("ДВЕРЬЮ", W/2, H/2-58);
+  cx.fillStyle="#fff"; cx.font="12px sans-serif";
+  cx.fillText("Лифтовая шахта без лифта.", W/2, H/2-30);
+  cx.fillText("Падай и бейся о бетонные пороги —", W/2, H/2-12);
+  cx.fillText("чем больше урона, тем больше очков!", W/2, H/2+6);
+  cx.fillStyle="#90caf9"; cx.font="11px sans-serif";
+  cx.fillText("Рули: держи левую / правую половину экрана", W/2, H/2+28);
+  drawBtn("▶  ПАДАТЬ");
+}
+
+function drawDone(){
+  cx.fillStyle="rgba(0,0,0,0.72)"; cx.fillRect(0,0,W,H);
+  cx.fillStyle="#ffeb3b"; cx.font="bold 22px sans-serif"; cx.textAlign="center";
+  cx.fillText("ПРИЗЕМЛИЛСЯ!", W/2, H/2-70);
+  cx.fillStyle="#fff"; cx.font="14px sans-serif";
+  cx.fillText("Набито синяков на:", W/2, H/2-40);
+  cx.fillStyle="#ff7043"; cx.font="bold 40px monospace";
+  cx.fillText(score+"", W/2, H/2);
+  cx.fillStyle="#90caf9"; cx.font="13px sans-serif";
+  cx.fillText("Рекорд: "+best, W/2, H/2+28);
+  drawBtn("🔁 ЕЩЁ РАЗ");
+}
+
+// ─── LOOP ───────────────────────────────────────────────────
+function loop(){
+  requestAnimationFrame(loop);
+  cx.setTransform(cv.width/W, 0, 0, cv.height/H, 0, 0);
+
+  if (gstate==="menu"){ fr++; drawMenu(); return; }
+
+  update();
+
+  cx.save();
+  if (shakeT>0) cx.translate((Math.random()-0.5)*shakeT*0.8, (Math.random()-0.5)*shakeT*0.8);
+  drawShaft();
+  drawMan();
+  cx.restore();
+
+  drawHUD();
+  if (gstate==="done") drawDone();
+}
+
+reset();
+gstate = "menu";
+loop();
+})();
+</script>
+</body>
+</html>
