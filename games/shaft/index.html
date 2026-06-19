@@ -26,7 +26,8 @@ function canvasXY(clientX, clientY){ return { x: clientX*W/cv.width, y: clientY*
 
 // ─── ГЕОМЕТРИЯ ШАХТЫ ────────────────────────────────────────
 const WALL = 56;                 // толщина стен по краям
-const IL = WALL + 8, IR = W - WALL - 8;   // внутренние границы шахты
+const IL = WALL, IR = W - WALL;  // ровные внутренние грани стен шахты
+const DEPTH = 34;                // глубина ниши-проёма внутрь холла
 const R = 13;                    // радиус тела человечка
 const FH = 140;                  // высота этажа
 const N = 45;                    // число этажей
@@ -37,19 +38,19 @@ const GR = 0.34, AIRX = 0.62, MAXVX = 6.2, MAXVY = 11;
 // ─── STATE ──────────────────────────────────────────────────
 let man, camY, score, combo, comboT, mult, fr, gstate, ledges, pops, shakeT, hintA, best=0;
 
-const LIP = 18;                  // насколько порог проёма выступает в шахту
 function makeLedges(){
   ledges = [];
   for (let i = 0; i < N; i++){
-    const y = TOP + i*FH;              // уровень порога (пола холла) на этаже
+    const y = TOP + i*FH;              // уровень порога (пола ниши) на этаже
     const doorH = 80 + Math.floor(Math.random()*18);
-    // открытый проём в лифтовый холл — чередуем сторону, иногда с обеих
+    // ниша-проём вглубь холла — чередуем сторону, иногда с обеих
     const baseSide = (i % 2 === 0) ? -1 : 1;
     const both = Math.random() < 0.32;
     const sides = both ? [-1, 1] : [baseSide];
     for (const side of sides){
-      const x = side < 0 ? IL : IR - LIP;
-      ledges.push({ side, x, y, w:LIP, h:14, doorH, floor:i, hit:-99 });
+      // recX — внешний (по шахте) край ниши; ниша уходит на DEPTH в стену
+      const recX = side < 0 ? IL - DEPTH : IR;
+      ledges.push({ side, recX, y, doorH, floor:i, hit:-99 });
     }
   }
 }
@@ -153,27 +154,34 @@ function update(){
   // каска улетела
   if (!man.hatOn){ man.hatVy += GR*0.7; man.hatY += man.hatVy; man.hatAng += 0.12; }
 
-  // стены шахты
-  if (man.x < IL+R){ man.x = IL+R; if (man.vx<0){ const s=Math.abs(man.vx); man.vx=Math.abs(man.vx)*0.5; if(s>1.5){score+=Math.round(s*3); addPop(man.x,man.y-16,"+"+Math.round(s*3),"#b0bec5"); shakeT=Math.max(shakeT,5);} } }
-  if (man.x > IR-R){ man.x = IR-R; if (man.vx>0){ const s=Math.abs(man.vx); man.vx=-Math.abs(man.vx)*0.5; if(s>1.5){score+=Math.round(s*3); addPop(man.x,man.y-16,"+"+Math.round(s*3),"#b0bec5"); shakeT=Math.max(shakeT,5);} } }
+  // границы по бокам: в проёме ниша уходит вглубь на DEPTH, иначе — ровная стена
+  let lb = IL + R, rb = IR - R, lOpen = null, rOpen = null;
+  for (const op of ledges){
+    if (man.y > op.y - op.doorH && man.y < op.y - R + 2){   // в пределах высоты проёма (выше порога)
+      if (op.side < 0){ lb = IL - DEPTH + R; lOpen = op; }
+      else            { rb = IR + DEPTH - R; rOpen = op; }
+    }
+  }
+  // удар о заднюю стенку ниши (или о ровную стену)
+  if (man.x < lb){ man.x = lb; if (man.vx < 0){ const s=-man.vx; man.vx = s*0.45;
+      if (lOpen){ if (s>1.0) impact(s, lOpen); } else if (s>1.5){ score+=Math.round(s*3); addPop(man.x,man.y-16,"+"+Math.round(s*3),"#b0bec5"); shakeT=Math.max(shakeT,5);} } }
+  if (man.x > rb){ man.x = rb; if (man.vx > 0){ const s=man.vx; man.vx = -s*0.45;
+      if (rOpen){ if (s>1.0) impact(s, rOpen); } else if (s>1.5){ score+=Math.round(s*3); addPop(man.x,man.y-16,"+"+Math.round(s*3),"#b0bec5"); shakeT=Math.max(shakeT,5);} } }
 
-  // выступы
-  // выступы — удар гасит падение и отклоняет вбок, но человечек всегда летит вниз
-  for (const lg of ledges){
-    if (Math.abs(lg.y - man.y) > 90) continue;
-    const c = circleRect(man.x, man.y, R, lg.x, lg.y, lg.w, lg.h);
+  // ПОРОГ ниши: влетев в проём, человечек бьётся об него (падая на нижнюю кромку)
+  for (const op of ledges){
+    if (Math.abs(op.y - man.y) > 90) continue;
+    const tx = op.side < 0 ? IL - DEPTH : IR;
+    const c = circleRect(man.x, man.y, R, tx, op.y, DEPTH, 12);
     if (c){
       const speed = Math.abs(man.vx*c.nx + man.vy*c.ny);
-      // выталкиваем из выступа
       man.x += c.nx*c.pen; man.y += c.ny*c.pen;
-      // всегда продолжаем падать (теряем часть скорости), отскок вверх не даём
-      man.vy = Math.max(1.4, man.vy*(lg.rebar?0.78:0.55));
-      // отклонение к центру шахты (от стены, к которой прижат выступ)
-      const away = (lg.side < 0) ? 1 : -1;
-      man.vx += away * (2 + speed*(lg.rebar?0.25:0.45));
+      man.vy = Math.max(1.4, man.vy*0.55);            // гасим падение, отскока вверх нет
+      const away = (op.side < 0) ? 1 : -1;            // выталкиваем обратно в шахту
+      man.vx += away * (2 + speed*0.45);
       man.vx = Math.max(-MAXVX, Math.min(MAXVX, man.vx));
       man.av += (Math.random()-0.5)*0.35;
-      if (speed > 1.0) impact(speed, lg);
+      if (speed > 1.0) impact(speed, op);
     }
   }
 
@@ -206,42 +214,41 @@ function rr(x,y,w,h,r){ const m=Math.min(r,w/2,h/2); cx.beginPath();
   cx.lineTo(x+m,y+h); cx.arcTo(x,y+h,x,y,m);
   cx.lineTo(x,y+m); cx.arcTo(x,y,x+w,y,m); cx.closePath(); }
 
-// открытый проём двери в лифтовый холл + порог, об который бьётся человечек
-function drawDoorway(lg, ys){
-  const left = lg.side < 0;
-  const ox = left ? 0 : W-WALL;            // область стены/холла
-  const topY = ys - lg.doorH;              // верх проёма
-  const flash = fr - lg.hit < 8;
+// проём-НИША вглубь холла (стена ровная, ниша уходит внутрь) + порог
+function drawDoorway(op, ys){
+  const left = op.side < 0;
+  const rx = left ? IL - DEPTH : IR;        // внешний край ниши (грань шахты)
+  const topY = ys - op.doorH;               // верх ниши
+  const flash = fr - op.hit < 8;
 
-  // освещённый холл за открытым проёмом
-  cx.fillStyle = "#d8cba6"; cx.fillRect(ox, topY, WALL, lg.doorH);      // светлая стена холла
-  cx.fillStyle = "#c2b488"; cx.fillRect(ox, ys-7, WALL, 7);            // пол холла у порога
-  cx.fillStyle = "rgba(0,0,0,0.10)"; cx.fillRect(ox, topY, WALL, 4);    // тень потолка холла
-  // номер этажа на стене холла
-  cx.fillStyle = "#6b5a34"; cx.font = "bold 12px monospace"; cx.textAlign = "center";
-  cx.fillText((N - lg.floor) + " эт.", ox + WALL/2, topY + lg.doorH/2 + 4);
+  // освещённый холл в глубине ниши
+  cx.fillStyle = "#d8cba6"; cx.fillRect(rx, topY, DEPTH, op.doorH);
+  // объёмное затенение (глубина ниши): темнее у дальней стенки
+  const sh = cx.createLinearGradient(left ? rx : rx+DEPTH, 0, left ? rx+DEPTH : rx, 0);
+  sh.addColorStop(0, "rgba(0,0,0,0.30)"); sh.addColorStop(0.5, "rgba(0,0,0,0)");
+  cx.fillStyle = sh; cx.fillRect(rx, topY, DEPTH, op.doorH);
+  // пол холла у порога + потолок ниши
+  cx.fillStyle = "#c2b488"; cx.fillRect(rx, ys-6, DEPTH, 6);
+  cx.fillStyle = "rgba(0,0,0,0.12)"; cx.fillRect(rx, topY, DEPTH, 4);
+  // номер этажа в глубине
+  cx.fillStyle = "#6b5a34"; cx.font = "bold 11px monospace"; cx.textAlign = "center";
+  cx.fillText((N - op.floor) + " эт.", rx + DEPTH/2, topY + op.doorH/2 + 4);
 
-  // тёплый свет, падающий из проёма в шахту
-  const x0 = left ? WALL : W-WALL-30;
-  const grad = cx.createLinearGradient(left?WALL:W-WALL, 0, left?WALL+30:W-WALL-30, 0);
-  grad.addColorStop(0, "rgba(255,235,170,0.28)");
-  grad.addColorStop(1, "rgba(255,235,170,0)");
-  cx.fillStyle = grad; cx.fillRect(x0, topY, 30, lg.doorH);
+  // тёплый свет, падающий из ниши в шахту
+  const lx = left ? IL : IR - 26;
+  const grad = cx.createLinearGradient(left ? IL : IR, 0, left ? IL+26 : IR-26, 0);
+  grad.addColorStop(0, "rgba(255,235,170,0.22)"); grad.addColorStop(1, "rgba(255,235,170,0)");
+  cx.fillStyle = grad; cx.fillRect(lx, topY, 26, op.doorH);
 
-  // бетонная рама проёма (косяк со стороны шахты + перемычка сверху)
-  cx.fillStyle = "#7d8186";
-  if (left){ cx.fillRect(WALL-4, topY-4, 6, lg.doorH+8); cx.fillRect(0, topY-4, WALL, 4); }
-  else     { cx.fillRect(W-WALL-2, topY-4, 6, lg.doorH+8); cx.fillRect(W-WALL, topY-4, WALL, 4); }
-
-  // ПОРОГ проёма — выступает в шахту (по нему удар)
-  cx.fillStyle = flash ? "#ffd180" : "#9aa0a6";
-  rr(lg.x, ys, lg.w, lg.h, 2); cx.fill();
-  cx.fillStyle = flash ? "#ffab40" : "#7a7e84"; cx.fillRect(lg.x, ys, lg.w, 3);
-  cx.fillStyle = "rgba(0,0,0,0.25)"; cx.fillRect(lg.x, ys+lg.h-3, lg.w, 3);
-  // острая кромка порога (об неё и бьётся)
+  // бетонные кромки проёма (перемычка сверху, порог снизу) — в глубине ниши
+  cx.fillStyle = flash ? "#ffd180" : "#8a8e94";
+  cx.fillRect(rx, topY-4, DEPTH, 5);             // перемычка
+  cx.fillStyle = flash ? "#ffab40" : "#9aa0a6";
+  cx.fillRect(rx, ys, DEPTH, 12);                // ПОРОГ (об него удар)
+  cx.fillStyle = "rgba(0,0,0,0.25)"; cx.fillRect(rx, ys+9, DEPTH, 3);
+  // острая кромка проёма на грани шахты
   cx.fillStyle = flash ? "#ff7043" : "#5d4037";
-  const ex = left ? lg.x + lg.w - 3 : lg.x;
-  cx.fillRect(ex, ys-3, 3, lg.h+3);
+  cx.fillRect(left ? IL-3 : IR, ys-2, 3, 14);
 }
 
 // ─── ОТРИСОВКА ШАХТЫ ────────────────────────────────────────
